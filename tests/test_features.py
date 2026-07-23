@@ -70,6 +70,30 @@ class TestNoNaN:
         assert not out.drop(columns=["scenario"]).isna().any().any()
 
 
+class TestWindowValidation:
+    """A window <= the input's sampling interval makes `.rolling(window,
+    min_periods=1)` produce an all-NaN std column (the time window then
+    only ever contains the current row), which would otherwise be silently
+    poisoned into an empty output by `dropna`. `build_features` MUST fail
+    fast instead (matches `generate()`'s existing fail-fast philosophy for
+    inconsistent params)."""
+
+    def test_raises_when_default_window_not_greater_than_interval(self):
+        # 10-minute interval, default windows include "5min" <= interval.
+        df = generate(duration_minutes=180, interval_seconds=600, seed=1)
+
+        with pytest.raises(ValueError):
+            build_features(df)
+
+    def test_raises_when_explicit_window_equals_interval(self):
+        # 60s interval, explicit window exactly equal (not just <=) must
+        # also raise — the requirement is strictly greater.
+        df = generate(duration_minutes=60, interval_seconds=60, seed=1)
+
+        with pytest.raises(ValueError):
+            build_features(df, windows=("1min",))
+
+
 class TestLagDiffFeatures:
     """Row-based lag/diff values match shifted/delta values (spec: Lag Features,
     Diff Features)."""
@@ -139,7 +163,15 @@ class TestSignalValidation:
 
         window = out.loc[out["is_anomaly"], "memory_pct_rolling_mean_5min"]
         assert len(window) > 0
-        assert (window.diff().dropna() >= 0).all()
+        # The "5min" rolling window spans 5 rows at this 60s interval, so
+        # the first few rows of the anomaly window still partially average
+        # in pre-anomaly samples (warm-up transition into the window) --
+        # monotonicity there isn't a mathematically guaranteed property,
+        # just a fixed-seed coincidence. Assert only past the transition,
+        # where the rolling mean is purely anomaly-driven.
+        stable = window.iloc[5:]
+        assert len(stable) > 0
+        assert (stable.diff().dropna() >= 0).all()
 
 
 class TestPurityAndPropagation:
