@@ -89,6 +89,12 @@ METRICS: list[MetricSpec] = [
 
 EXPECTED_COLUMNS = frozenset(spec.name for spec in METRICS)
 
+# Ground-truth labels emitted alongside the metric columns (Phase 2
+# prerequisite): `is_anomaly` (bool) is True only inside the resolved
+# scenario window; `scenario` (str | None) holds the active scenario name
+# there and None elsewhere.
+GROUND_TRUTH_COLUMNS = frozenset({"is_anomaly", "scenario"})
+
 
 def _validate_params(
     duration_minutes: int,
@@ -163,12 +169,17 @@ def generate(
     """Generate synthetic system metrics as a tz-aware UTC-indexed DataFrame.
 
     Normal mode (`scenario=None`, the sole normal-mode sentinel) produces 5
-    columns (cpu_pct, memory_pct, disk_pct, latency_ms, requests_per_sec)
-    with daily seasonality plus noise, bounded per-metric.
+    metric columns (cpu_pct, memory_pct, disk_pct, latency_ms,
+    requests_per_sec) with daily seasonality plus noise, bounded per-metric,
+    plus 2 ground-truth label columns: `is_anomaly` (bool, always False) and
+    `scenario` (str | None, always None) — 7 columns total.
 
     Any non-`None` `scenario` name is looked up in `scenarios.SCENARIOS` and
     its `apply()` mutator overrides the affected column(s) within the
-    resolved anomaly window; an unregistered name raises `ValueError`.
+    resolved anomaly window; an unregistered name raises `ValueError`. Inside
+    that same window, `is_anomaly` is True and `scenario` holds the active
+    scenario name; both stay False/None everywhere else, including when the
+    resolved window is genuinely zero-length.
     """
     _validate_params(
         duration_minutes,
@@ -184,6 +195,8 @@ def generate(
 
     data = {spec.name: _sample_metric(spec, phase, n, rng) for spec in METRICS}
     df = pd.DataFrame(data, index=index)
+    df["is_anomaly"] = False
+    df["scenario"] = pd.Series([None] * n, index=df.index, dtype=object)
 
     if scenario is not None:
         registered = SCENARIOS.get(scenario)
@@ -202,6 +215,9 @@ def generate(
         duration_rows = max(0, min(duration_rows, n - start_idx))
         if duration_rows > 0:
             registered.apply(df, start_idx, duration_rows, rng)
+            window_end = start_idx + duration_rows
+            df.iloc[start_idx:window_end, df.columns.get_loc("is_anomaly")] = True
+            df.iloc[start_idx:window_end, df.columns.get_loc("scenario")] = scenario
 
     for spec in METRICS:
         df[spec.name] = df[spec.name].clip(lower=spec.lower, upper=spec.upper)
