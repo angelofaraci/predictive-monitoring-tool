@@ -1,0 +1,70 @@
+name: Deploy
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch: {}
+
+env:
+  RESOURCE_GROUP: argos-rg
+  CONTAINER_APP_NAME: argos-app
+  IMAGE_NAME: predictive-monitoring-tool
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Azure login (OIDC)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      # ACR name embeds a subscription-derived hash suffix (see PR1 design),
+      # so it is discovered here instead of hardcoded or duplicated as a
+      # secret; exactly one ACR is provisioned in the resource group.
+      - name: Resolve ACR login server
+        id: acr
+        run: |
+          LOGIN_SERVER=$(az acr list --resource-group "$RESOURCE_GROUP" --query "[0].loginServer" -o tsv)
+          echo "login_server=$LOGIN_SERVER" >> "$GITHUB_OUTPUT"
+
+      - name: ACR login
+        run: az acr login --name "${{ steps.acr.outputs.login_server }}"
+
+      - name: Build and push image
+        run: |
+          IMAGE="${{ steps.acr.outputs.login_server }}/$IMAGE_NAME"
+          docker build -t "$IMAGE:${{ github.sha }}" -t "$IMAGE:latest" .
+          docker push "$IMAGE:${{ github.sha }}"
+          docker push "$IMAGE:latest"
+
+      - name: Deploy new revision
+        run: |
+          az containerapp update \
+            --name "$CONTAINER_APP_NAME" \
+            --resource-group "$RESOURCE_GROUP" \
+            --image "${{ steps.acr.outputs.login_server }}/$IMAGE_NAME:${{ github.sha }}"
+
+      - name: Post-deploy health check
+        run: |
+          FQDN=$(az containerapp show --name "$CONTAINER_APP_NAME" --resource-group "$RESOURCE_GROUP" \
+            --query "properties.configuration.ingress.fqdn" -o tsv)
+          for attempt in $(seq 1 10); do
+            if curl --fail --silent --show-error "https://$FQDN/health"; then
+              echo "Health check passed on attempt $attempt"
+              exit 0
+            fi
+            echo "Attempt $attempt failed, retrying in 6s..."
+            sleep 6
+          done
+          echo "Health check failed after 10 attempts" >&2
+          exit 1
