@@ -1,5 +1,5 @@
 """Synthetic metrics data generation."""
 
-from argos.data.generator import generate
+from predictive_monitoring_tool.data.generator import generate
 
 __all__ = ["generate"]

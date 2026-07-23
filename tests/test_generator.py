@@ -1,5 +1,5 @@
-"""Tests for the synthetic metrics engine (`argos.data.generator`) and the
-anomaly scenario registry (`argos.data.scenarios`).
+"""Tests for the synthetic metrics engine (`predictive_monitoring_tool.data.generator`)
+and the anomaly scenario registry (`predictive_monitoring_tool.data.scenarios`).
 
 Strict TDD: normal-mode tests were written before `generator.py` existed
 (PR1). This PR (PR2) adds the scenario registry mechanics and the 4 anomaly
@@ -15,9 +15,13 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from argos.data.generator import EXPECTED_COLUMNS, generate
+from predictive_monitoring_tool.data.generator import EXPECTED_COLUMNS, generate
 
 FIXED_ANCHOR = pd.Timestamp("2024-01-01T00:00:00Z")
+
+# Phase 2 prerequisite: `generate()` now also emits ground-truth anomaly
+# labels alongside the 5 metric columns (see sdd/phase2-feature-pipeline).
+GROUND_TRUTH_COLUMNS = frozenset({"is_anomaly", "scenario"})
 
 
 class TestPublicSignatureContract:
@@ -55,7 +59,9 @@ class TestPublicSignatureContract:
     def test_positional_call_matches_original_shape(self):
         df = generate(60, 10, seed=1)
         assert len(df) == 360
-        assert set(df.columns) == EXPECTED_COLUMNS
+        # Phase 2 prerequisite added the 2 ground-truth label columns on top
+        # of the original 5 metric columns (authorized, deliberate change).
+        assert set(df.columns) == EXPECTED_COLUMNS | GROUND_TRUTH_COLUMNS
 
 
 class TestValidation:
@@ -80,9 +86,20 @@ class TestValidation:
 
 
 class TestColumns:
-    def test_exact_five_columns(self):
+    def test_exact_output_columns(self):
+        """Locked contract test, DELIBERATELY updated for Phase 2.
+
+        This test originally asserted exactly 5 columns and existed to catch
+        *accidental* drift of the public output contract. Phase 2
+        (sdd/phase2-feature-pipeline) intentionally and explicitly extends
+        that contract with 2 ground-truth label columns (`is_anomaly`,
+        `scenario`) so `build_features()` can propagate them. This is an
+        authorized change to the locked contract, not the unauthorized
+        drift the original test was written to prevent.
+        """
         df = generate(duration_minutes=60, interval_seconds=60, seed=1)
-        assert set(df.columns) == EXPECTED_COLUMNS
+        assert set(df.columns) == EXPECTED_COLUMNS | GROUND_TRUTH_COLUMNS
+        assert len(df.columns) == 7
 
 
 class TestNormalMode:
@@ -188,13 +205,65 @@ class TestExplicitZeroDurationWindow:
         pd.testing.assert_frame_equal(df_zero, df_normal)
 
 
+class TestGroundTruthLabels:
+    """`is_anomaly`/`scenario` ground-truth columns (sdd/phase2-feature-pipeline,
+    prerequisite unit). Derived from the same `start_idx`/`duration_rows`
+    slice the scenario mutators already use."""
+
+    def test_normal_mode_all_false_and_none(self):
+        df = generate(duration_minutes=60, interval_seconds=60, seed=1)
+        assert (~df["is_anomaly"]).all()
+        assert df["scenario"].isna().all()
+
+    def test_scenario_window_labels_only_the_window(self):
+        df = generate(
+            duration_minutes=1440,
+            interval_seconds=60,
+            scenario="memory_leak",
+            scenario_start_minute=100,
+            anomaly_duration_minutes=60,
+            seed=2,
+        )
+        inside = df.iloc[100:160]
+        outside = df.drop(df.index[100:160])
+
+        assert inside["is_anomaly"].all()
+        assert (inside["scenario"] == "memory_leak").all()
+        assert (~outside["is_anomaly"]).all()
+        assert outside["scenario"].isna().all()
+
+    def test_label_dtypes(self):
+        df = generate(
+            duration_minutes=1440,
+            interval_seconds=60,
+            scenario="memory_leak",
+            scenario_start_minute=100,
+            anomaly_duration_minutes=60,
+            seed=2,
+        )
+        assert df["is_anomaly"].dtype == np.dtype("bool")
+        assert df["scenario"].dtype == np.dtype("object")
+
+    def test_zero_duration_edge_case_keeps_labels_false_and_none(self):
+        df = generate(
+            duration_minutes=1440,
+            interval_seconds=60,
+            scenario="cpu_spike",
+            scenario_start_minute=50,
+            anomaly_duration_minutes=0,
+            seed=3,
+        )
+        assert (~df["is_anomaly"]).all()
+        assert df["scenario"].isna().all()
+
+
 class TestScenarioRegistry:
     """Mechanics of the self-registering `Scenario`/`register()` strategy
-    pattern in `argos.data.scenarios` (design: "Scenario extensibility
-    mechanism")."""
+    pattern in `predictive_monitoring_tool.data.scenarios` (design: "Scenario
+    extensibility mechanism")."""
 
     def test_all_four_scenarios_registered(self):
-        from argos.data.scenarios import SCENARIOS, Scenario
+        from predictive_monitoring_tool.data.scenarios import SCENARIOS, Scenario
 
         assert set(SCENARIOS) == {
             "memory_leak",
@@ -209,14 +278,14 @@ class TestScenarioRegistry:
             assert callable(scenario.apply)
 
     def test_registered_scenario_is_frozen(self):
-        from argos.data.scenarios import SCENARIOS
+        from predictive_monitoring_tool.data.scenarios import SCENARIOS
 
         scenario = SCENARIOS["memory_leak"]
         with pytest.raises(Exception):  # noqa: B017 - frozen dataclass raises FrozenInstanceError
             scenario.name = "renamed"  # type: ignore[misc]
 
     def test_unregistered_name_absent_from_registry(self):
-        from argos.data.scenarios import SCENARIOS
+        from predictive_monitoring_tool.data.scenarios import SCENARIOS
 
         assert "totally_fake_scenario_xyz" not in SCENARIOS
 
