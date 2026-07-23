@@ -79,6 +79,36 @@ generate(
 Registered anomaly scenarios (see `src/predictive_monitoring_tool/data/scenarios.py`):
 `memory_leak`, `cpu_spike`, `disk_fill`, `service_down`.
 
+## Feature engineering / Ingeniería de features
+
+`predictive_monitoring_tool.data.features.build_features()` (Phase 2) turns
+`generate()`'s raw metrics into a model-ready `pandas.DataFrame` for the
+anomaly-detection model in Phase 3. For each of the 5 raw metrics it adds:
+
+- **Rolling** (time-based, per entry in `windows`, default `("5min",
+  "15min")`): `{metric}_rolling_mean_{window}` / `{metric}_rolling_std_{window}`.
+- **Lag** (row-based, not clock-time): `{metric}_lag_1` / `{metric}_lag_5`
+  via `.shift()`.
+- **Diff**: `{metric}_diff`, the first-order difference via `.diff()`.
+
+Plus 3 temporal features derived from the index: `hour`, `day_of_week`, and
+`is_business_hours` (`True` only Mon-Fri 09:00-18:00 UTC). `is_anomaly` and
+`scenario` (Phase 1 ground-truth labels) are propagated unchanged.
+
+Rolling/lag warm-up rows produce `NaN`s; the policy is to **drop** those
+rows rather than fill/impute them (inventing placeholder values could be
+mistaken for real data by the model during training). Every `windows` entry
+must be strictly greater than the input's sampling interval, or
+`build_features()` raises `ValueError` instead of silently returning an
+empty frame.
+
+```python
+from predictive_monitoring_tool.data.features import build_features
+from predictive_monitoring_tool.data.generator import generate
+
+df_features = build_features(generate(duration_minutes=180, seed=42))
+```
+
 ## Tests / Pruebas
 
 ```bash
@@ -86,12 +116,16 @@ uv run pytest
 uv run ruff check .
 ```
 
-## Exploration Notebook / Notebook de exploración
+## Exploration Notebooks / Notebooks de exploración
 
 `notebooks/01_exploracion_datos_sinteticos.ipynb` plots normal mode plus
-each of the 4 anomaly scenarios for visual inspection. Run it with:
+each of the 4 anomaly scenarios for visual inspection.
+`notebooks/02_feature_engineering.ipynb` runs `build_features()` on a
+`memory_leak` scenario and plots the raw metric vs. its rolling mean, with
+the anomaly window marked. Run either with:
 
 ```bash
 uv sync --group notebooks
 uv run jupyter nbconvert --to notebook --execute notebooks/01_exploracion_datos_sinteticos.ipynb
+uv run jupyter nbconvert --to notebook --execute notebooks/02_feature_engineering.ipynb
 ```
