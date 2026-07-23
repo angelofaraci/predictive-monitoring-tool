@@ -8,6 +8,8 @@ in PR2 alongside `scenarios.py`'s real registrations.
 
 from __future__ import annotations
 
+import inspect
+
 import numpy as np
 import pandas as pd
 import pytest
@@ -15,6 +17,44 @@ import pytest
 from argos.data.generator import EXPECTED_COLUMNS, generate
 
 FIXED_ANCHOR = pd.Timestamp("2024-01-01T00:00:00Z")
+
+
+class TestPublicSignatureContract:
+    """Locks the authoritative `generate()` shape so a future spec phase
+    cannot silently drift the public contract again (see: unauthorized
+    drift caught and reverted before PR2)."""
+
+    def test_parameter_order_and_kinds(self):
+        params = list(inspect.signature(generate).parameters.values())
+        assert [p.name for p in params] == [
+            "duration_minutes",
+            "interval_seconds",
+            "scenario",
+            "scenario_start_minute",
+            "anomaly_duration_minutes",
+            "start_time",
+            "seed",
+        ]
+        assert all(p.kind is inspect.Parameter.POSITIONAL_OR_KEYWORD for p in params)
+
+    def test_defaults(self):
+        by_name = inspect.signature(generate).parameters
+        assert by_name["duration_minutes"].default is inspect.Parameter.empty
+        assert by_name["interval_seconds"].default == 10
+        assert by_name["scenario"].default is None
+        assert by_name["scenario_start_minute"].default is None
+        assert by_name["anomaly_duration_minutes"].default is None
+        assert by_name["start_time"].default is None
+        assert by_name["seed"].default is None
+
+    def test_duration_minutes_is_required(self):
+        with pytest.raises(TypeError):
+            generate()  # type: ignore[call-arg]
+
+    def test_positional_call_matches_original_shape(self):
+        df = generate(60, 10, seed=1)
+        assert len(df) == 360
+        assert set(df.columns) == EXPECTED_COLUMNS
 
 
 class TestValidation:

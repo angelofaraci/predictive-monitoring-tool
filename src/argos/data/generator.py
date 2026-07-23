@@ -5,8 +5,9 @@ each metric's baseline + daily seasonality + noise -> (optional) scenario
 override in-window -> final physical bounds clamp -> return a DataFrame.
 
 Scenario dispatch (`scenarios.py`) is a stub in this PR: `scenario=None`
-(or "normal") is the fully-implemented normal-mode path. Any other name
-fails fast with `ValueError` until PR2 registers the real anomaly mutators.
+is the fully-implemented normal-mode path (the sole normal-mode sentinel).
+Any other name fails fast with `ValueError` until PR2 registers the real
+anomaly mutators.
 """
 
 from __future__ import annotations
@@ -150,23 +151,22 @@ def _sample_metric(
 
 
 def generate(
-    scenario: str | None = "normal",
-    *,
-    duration_minutes: int = 1440,
-    interval_seconds: int = 60,
-    start_time: datetime | pd.Timestamp | None = None,
-    seed: int | None = None,
+    duration_minutes: int,
+    interval_seconds: int = 10,
+    scenario: str | None = None,
     scenario_start_minute: int | None = None,
     anomaly_duration_minutes: int | None = None,
+    start_time: datetime | pd.Timestamp | None = None,
+    seed: int | None = None,
 ) -> pd.DataFrame:
     """Generate synthetic system metrics as a tz-aware UTC-indexed DataFrame.
 
-    Normal mode (`scenario=None` or `"normal"`) is fully implemented: 5
-    columns (cpu_pct, memory_pct, disk_pct, latency_ms, requests_per_sec)
-    with daily seasonality plus noise, bounded per-metric.
+    Normal mode (`scenario=None`, the sole normal-mode sentinel) is fully
+    implemented: 5 columns (cpu_pct, memory_pct, disk_pct, latency_ms,
+    requests_per_sec) with daily seasonality plus noise, bounded per-metric.
 
-    Any other `scenario` name is looked up in `scenarios.SCENARIOS`; since
-    that registry is a stub in this PR, an unregistered name raises
+    Any non-`None` `scenario` name is looked up in `scenarios.SCENARIOS`;
+    since that registry is a stub in this PR, an unregistered name raises
     `ValueError` (real anomaly mutators land in PR2).
     """
     _validate_params(
@@ -184,7 +184,7 @@ def generate(
     data = {spec.name: _sample_metric(spec, phase, n, rng) for spec in METRICS}
     df = pd.DataFrame(data, index=index)
 
-    if scenario not in (None, "normal"):
+    if scenario is not None:
         registered = SCENARIOS.get(scenario)
         if registered is None:
             raise ValueError(
