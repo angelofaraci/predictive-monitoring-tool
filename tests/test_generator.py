@@ -1,5 +1,5 @@
-"""Tests for the synthetic metrics engine (`argos.data.generator`) and the
-anomaly scenario registry (`argos.data.scenarios`).
+"""Tests for the synthetic metrics engine (`predictive_monitoring_tool.data.generator`)
+and the anomaly scenario registry (`predictive_monitoring_tool.data.scenarios`).
 
 Strict TDD: normal-mode tests were written before `generator.py` existed
 (PR1). This PR (PR2) adds the scenario registry mechanics and the 4 anomaly
@@ -15,7 +15,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from argos.data.generator import EXPECTED_COLUMNS, generate
+from predictive_monitoring_tool.data.generator import EXPECTED_COLUMNS, generate
 
 FIXED_ANCHOR = pd.Timestamp("2024-01-01T00:00:00Z")
 
@@ -190,11 +190,11 @@ class TestExplicitZeroDurationWindow:
 
 class TestScenarioRegistry:
     """Mechanics of the self-registering `Scenario`/`register()` strategy
-    pattern in `argos.data.scenarios` (design: "Scenario extensibility
-    mechanism")."""
+    pattern in `predictive_monitoring_tool.data.scenarios` (design: "Scenario
+    extensibility mechanism")."""
 
     def test_all_four_scenarios_registered(self):
-        from argos.data.scenarios import SCENARIOS, Scenario
+        from predictive_monitoring_tool.data.scenarios import SCENARIOS, Scenario
 
         assert set(SCENARIOS) == {
             "memory_leak",
@@ -209,14 +209,14 @@ class TestScenarioRegistry:
             assert callable(scenario.apply)
 
     def test_registered_scenario_is_frozen(self):
-        from argos.data.scenarios import SCENARIOS
+        from predictive_monitoring_tool.data.scenarios import SCENARIOS
 
         scenario = SCENARIOS["memory_leak"]
         with pytest.raises(Exception):  # noqa: B017 - frozen dataclass raises FrozenInstanceError
             scenario.name = "renamed"  # type: ignore[misc]
 
     def test_unregistered_name_absent_from_registry(self):
-        from argos.data.scenarios import SCENARIOS
+        from predictive_monitoring_tool.data.scenarios import SCENARIOS
 
         assert "totally_fake_scenario_xyz" not in SCENARIOS
 

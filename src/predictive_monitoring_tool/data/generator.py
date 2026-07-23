@@ -19,7 +19,7 @@ from datetime import datetime
 import numpy as np
 import pandas as pd
 
-from argos.data.scenarios import SCENARIOS
+from predictive_monitoring_tool.data.scenarios import SCENARIOS
 
 FIXED_START_ANCHOR = pd.Timestamp("2024-01-01T00:00:00Z")
 

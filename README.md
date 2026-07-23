@@ -1,6 +1,6 @@
-# Argos
+# predictive-monitoring-tool
 
-Argos is a predictive AIOps system: it generates synthetic system metrics,
+predictive-monitoring-tool is a predictive AIOps system: it generates synthetic system metrics,
 learns what "normal" looks like, and eventually diagnoses anomalies through
 an agent-based workflow. This repository currently implements **Phase 1**
 of the project — the repo scaffold and a deterministic synthetic
@@ -11,7 +11,7 @@ and roadmap.
 
 ---
 
-Argos es un sistema de AIOps predictivo: genera métricas sintéticas de
+predictive-monitoring-tool es un sistema de AIOps predictivo: genera métricas sintéticas de
 sistema, aprende cómo es el comportamiento "normal" y, en fases futuras,
 diagnostica anomalías mediante un agente. Este repositorio implementa por
 ahora la **Fase 1** del proyecto — el scaffold del repo y un generador
@@ -22,7 +22,7 @@ despliegue) se construyen sobre esta base; ver
 
 ## Install / Instalación
 
-Argos uses [`uv`](https://docs.astral.sh/uv/) for dependency management.
+predictive-monitoring-tool uses [`uv`](https://docs.astral.sh/uv/) for dependency management.
 
 ```bash
 uv sync
@@ -39,13 +39,13 @@ uv sync --group notebooks
 
 ## Usage / Uso
 
-The public entry point is `argos.data.generator.generate()`, which
+The public entry point is `predictive_monitoring_tool.data.generator.generate()`, which
 produces a deterministic `pandas.DataFrame` of 5 synthetic system metrics
 (`cpu_pct`, `memory_pct`, `disk_pct`, `latency_ms`, `requests_per_sec`)
 indexed by a tz-aware UTC timestamp.
 
 ```python
-from argos.data.generator import generate
+from predictive_monitoring_tool.data.generator import generate
 
 # Normal mode: 2 hours of data at the default 10-second interval, seeded
 # for reproducibility.
@@ -76,7 +76,7 @@ generate(
 )
 ```
 
-Registered anomaly scenarios (see `src/argos/data/scenarios.py`):
+Registered anomaly scenarios (see `src/predictive_monitoring_tool/data/scenarios.py`):
 `memory_leak`, `cpu_spike`, `disk_fill`, `service_down`.
 
 ## Tests / Pruebas

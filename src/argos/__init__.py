@@ -1,1 +1,0 @@
-"""Argos: predictive AIOps system."""
