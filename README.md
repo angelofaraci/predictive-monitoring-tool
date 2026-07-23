@@ -109,6 +109,17 @@ from predictive_monitoring_tool.data.generator import generate
 df_features = build_features(generate(duration_minutes=180, seed=42))
 ```
 
+## Deploy / Despliegue
+
+Phase 2.5 adds a minimal walking skeleton: Terraform (`infra/terraform/`)
+provisions an Azure Container Registry, a Container Apps environment, and a
+Container App with OIDC-only CI/CD trust (no stored client secret). A
+`GET /health` FastAPI endpoint (`src/predictive_monitoring_tool/api/`) proves
+the container runs correctly, and `.github/workflows/deploy.yml` builds,
+tags with the commit SHA, pushes, and deploys on every push to `main`. See
+[`docs/fase-2.5-walking-skeleton.md`](docs/fase-2.5-walking-skeleton.md) for
+the architecture, the manual OIDC setup steps, and how to trigger a deploy.
+
 ## Tests / Pruebas
 
 ```bash
