@@ -131,6 +131,31 @@ class TestDeterminism:
         state_after = np.random.get_state()[1]
         assert np.array_equal(state_before, state_after)
 
+    @pytest.mark.parametrize(
+        "scenario,start_minute,window_minutes,seed",
+        [
+            # cpu_spike and service_down both draw from `rng.uniform(...)`
+            # inside their apply() mutators, so the scenario-dispatch path
+            # must be proven deterministic too, not just normal mode.
+            ("cpu_spike", 50, 30, 3),
+            ("service_down", 300, 15, 5),
+        ],
+    )
+    def test_same_seed_reproduces_identical_dataframe_with_scenario(
+        self, scenario, start_minute, window_minutes, seed
+    ):
+        common = dict(
+            duration_minutes=1440,
+            interval_seconds=60,
+            scenario=scenario,
+            scenario_start_minute=start_minute,
+            anomaly_duration_minutes=window_minutes,
+            seed=seed,
+        )
+        df1 = generate(**common)
+        df2 = generate(**common)
+        pd.testing.assert_frame_equal(df1, df2)
+
 
 class TestSeasonality:
     def test_daily_periodicity_present_in_cpu_pct(self):
@@ -141,6 +166,26 @@ class TestSeasonality:
         df = generate(duration_minutes=5 * 1440, interval_seconds=60, seed=7)
         by_hour = df.groupby(df.index.hour)["cpu_pct"].mean()
         assert abs(by_hour.loc[6] - by_hour.loc[18]) > 5.0
+
+
+class TestExplicitZeroDurationWindow:
+    """`anomaly_duration_minutes=0` is a legitimate explicit value under the
+    `int | None` type — it must resolve to a genuinely zero-length window,
+    not silently fall back to the scenario's default duration via Python
+    truthiness (`0` is falsy, so `x or default` treats it as "not passed")."""
+
+    def test_zero_duration_produces_no_mutation_not_default_duration(self):
+        common = dict(
+            duration_minutes=1440,
+            interval_seconds=60,
+            scenario_start_minute=50,
+            seed=3,
+        )
+        df_zero = generate(scenario="cpu_spike", anomaly_duration_minutes=0, **common)
+        df_normal = generate(scenario=None, anomaly_duration_minutes=0, **common)
+        # If the window were truly zero-length, cpu_spike's apply() never
+        # runs and the result is byte-for-byte identical to normal mode.
+        pd.testing.assert_frame_equal(df_zero, df_normal)
 
 
 class TestScenarioRegistry:

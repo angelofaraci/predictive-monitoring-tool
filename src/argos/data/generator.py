@@ -192,7 +192,11 @@ def generate(
                 f"Unknown scenario: {scenario!r}. Registered scenarios: "
                 f"{sorted(SCENARIOS)}"
             )
-        window_minutes = anomaly_duration_minutes or registered.default_duration_minutes
+        window_minutes = (
+            registered.default_duration_minutes
+            if anomaly_duration_minutes is None
+            else anomaly_duration_minutes
+        )
         start_idx = (scenario_start_minute or 0) * 60 // interval_seconds
         duration_rows = window_minutes * 60 // interval_seconds
         duration_rows = max(0, min(duration_rows, n - start_idx))
