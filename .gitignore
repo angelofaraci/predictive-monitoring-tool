@@ -10,3 +10,11 @@ build/
 .pytest_cache/
 .ruff_cache/
 .coverage
+
+# Terraform (infra/terraform) — local state and working-dir cache only.
+# .terraform.lock.hcl stays tracked (provider version pinning).
+.terraform/
+*.tfstate
+*.tfstate.backup
+*.tfvars
+crash.log
