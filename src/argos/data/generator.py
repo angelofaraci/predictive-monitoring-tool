@@ -4,10 +4,11 @@ Pipeline: validate params -> build a tz-aware UTC DatetimeIndex -> sample
 each metric's baseline + daily seasonality + noise -> (optional) scenario
 override in-window -> final physical bounds clamp -> return a DataFrame.
 
-Scenario dispatch (`scenarios.py`) is a stub in this PR: `scenario=None`
-is the fully-implemented normal-mode path (the sole normal-mode sentinel).
-Any other name fails fast with `ValueError` until PR2 registers the real
-anomaly mutators.
+`scenario=None` is the sole normal-mode sentinel. Any other name is looked
+up in `scenarios.SCENARIOS`; an unregistered name fails fast with
+`ValueError`. Registered scenarios mutate only their target column(s) over
+the row-slice `[start_idx, start_idx + duration_rows)`; everything outside
+that slice stays untouched (still normal-mode).
 """
 
 from __future__ import annotations
@@ -161,13 +162,13 @@ def generate(
 ) -> pd.DataFrame:
     """Generate synthetic system metrics as a tz-aware UTC-indexed DataFrame.
 
-    Normal mode (`scenario=None`, the sole normal-mode sentinel) is fully
-    implemented: 5 columns (cpu_pct, memory_pct, disk_pct, latency_ms,
-    requests_per_sec) with daily seasonality plus noise, bounded per-metric.
+    Normal mode (`scenario=None`, the sole normal-mode sentinel) produces 5
+    columns (cpu_pct, memory_pct, disk_pct, latency_ms, requests_per_sec)
+    with daily seasonality plus noise, bounded per-metric.
 
-    Any non-`None` `scenario` name is looked up in `scenarios.SCENARIOS`;
-    since that registry is a stub in this PR, an unregistered name raises
-    `ValueError` (real anomaly mutators land in PR2).
+    Any non-`None` `scenario` name is looked up in `scenarios.SCENARIOS` and
+    its `apply()` mutator overrides the affected column(s) within the
+    resolved anomaly window; an unregistered name raises `ValueError`.
     """
     _validate_params(
         duration_minutes,
@@ -188,11 +189,19 @@ def generate(
         registered = SCENARIOS.get(scenario)
         if registered is None:
             raise ValueError(
-                f"Unknown or not-yet-implemented scenario: {scenario!r} "
-                "(scenario registry is a stub in this PR; see PR2)"
+                f"Unknown scenario: {scenario!r}. Registered scenarios: "
+                f"{sorted(SCENARIOS)}"
             )
-        # Real scenario dispatch (window slicing + df.apply mutation) lands
-        # in PR2 once `registered` carries a real `Scenario.apply` callable.
+        window_minutes = (
+            registered.default_duration_minutes
+            if anomaly_duration_minutes is None
+            else anomaly_duration_minutes
+        )
+        start_idx = (scenario_start_minute or 0) * 60 // interval_seconds
+        duration_rows = window_minutes * 60 // interval_seconds
+        duration_rows = max(0, min(duration_rows, n - start_idx))
+        if duration_rows > 0:
+            registered.apply(df, start_idx, duration_rows, rng)
 
     for spec in METRICS:
         df[spec.name] = df[spec.name].clip(lower=spec.lower, upper=spec.upper)
