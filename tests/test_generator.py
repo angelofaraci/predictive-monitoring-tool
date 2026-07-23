@@ -1,9 +1,10 @@
-"""Tests for the normal-mode synthetic metrics engine (`argos.data.generator`).
+"""Tests for the synthetic metrics engine (`argos.data.generator`) and the
+anomaly scenario registry (`argos.data.scenarios`).
 
-Strict TDD: written before `generator.py` exists (RED), then implementation
-follows to make these pass (GREEN). Scenario-specific tests (memory_leak,
-cpu_spike, disk_fill, service_down) are out of scope for this PR — they land
-in PR2 alongside `scenarios.py`'s real registrations.
+Strict TDD: normal-mode tests were written before `generator.py` existed
+(PR1). This PR (PR2) adds the scenario registry mechanics and the 4 anomaly
+scenarios (memory_leak, cpu_spike, disk_fill, service_down) the same way —
+tests precede the real `Scenario`/`register()`/mutator implementation.
 """
 
 from __future__ import annotations
@@ -71,10 +72,11 @@ class TestValidation:
             generate(duration_minutes=10, interval_seconds=7)
 
     def test_unregistered_scenario_raises(self):
-        # scenarios.py is a stub in this PR (empty registry); any non-"normal"
-        # name must fail clearly rather than fake scenario behavior.
+        # A genuinely unregistered name (all 4 real scenarios are now
+        # registered as of PR2) must still fail fast rather than fake
+        # scenario behavior.
         with pytest.raises(ValueError):
-            generate(scenario="cpu_spike", duration_minutes=60, seed=1)
+            generate(scenario="totally_fake_scenario_xyz", duration_minutes=60, seed=1)
 
 
 class TestColumns:
@@ -139,3 +141,183 @@ class TestSeasonality:
         df = generate(duration_minutes=5 * 1440, interval_seconds=60, seed=7)
         by_hour = df.groupby(df.index.hour)["cpu_pct"].mean()
         assert abs(by_hour.loc[6] - by_hour.loc[18]) > 5.0
+
+
+class TestScenarioRegistry:
+    """Mechanics of the self-registering `Scenario`/`register()` strategy
+    pattern in `argos.data.scenarios` (design: "Scenario extensibility
+    mechanism")."""
+
+    def test_all_four_scenarios_registered(self):
+        from argos.data.scenarios import SCENARIOS, Scenario
+
+        assert set(SCENARIOS) == {
+            "memory_leak",
+            "cpu_spike",
+            "disk_fill",
+            "service_down",
+        }
+        for name, scenario in SCENARIOS.items():
+            assert isinstance(scenario, Scenario)
+            assert scenario.name == name
+            assert scenario.default_duration_minutes > 0
+            assert callable(scenario.apply)
+
+    def test_registered_scenario_is_frozen(self):
+        from argos.data.scenarios import SCENARIOS
+
+        scenario = SCENARIOS["memory_leak"]
+        with pytest.raises(Exception):  # noqa: B017 - frozen dataclass raises FrozenInstanceError
+            scenario.name = "renamed"  # type: ignore[misc]
+
+    def test_unregistered_name_absent_from_registry(self):
+        from argos.data.scenarios import SCENARIOS
+
+        assert "totally_fake_scenario_xyz" not in SCENARIOS
+
+
+class TestScenarios:
+    """Per-scenario pattern checks + no-leakage-outside-window checks.
+
+    Params mirror the acceptance scenarios in `sdd/phase1-setup/spec`
+    exactly (same seed/window per scenario) so these stay traceable back to
+    the spec. `interval_seconds=60` makes each row exactly one minute, so
+    `scenario_start_minute`/`anomaly_duration_minutes` map 1:1 to row
+    offsets.
+    """
+
+    @pytest.mark.parametrize(
+        "scenario,start_minute,window_minutes,seed",
+        [
+            ("memory_leak", 100, 60, 2),
+            ("cpu_spike", 50, 30, 3),
+            ("disk_fill", 200, 120, 4),
+            ("service_down", 300, 15, 5),
+        ],
+    )
+    def test_no_leakage_outside_window(
+        self, scenario, start_minute, window_minutes, seed
+    ):
+        common = dict(
+            duration_minutes=1440,
+            interval_seconds=60,
+            scenario_start_minute=start_minute,
+            anomaly_duration_minutes=window_minutes,
+            seed=seed,
+        )
+        df_scenario = generate(scenario=scenario, **common)
+        df_normal = generate(scenario=None, **common)
+
+        end_minute = start_minute + window_minutes
+        pd.testing.assert_frame_equal(
+            df_scenario.iloc[:start_minute], df_normal.iloc[:start_minute]
+        )
+        pd.testing.assert_frame_equal(
+            df_scenario.iloc[end_minute:], df_normal.iloc[end_minute:]
+        )
+
+    def test_memory_leak_monotonic_non_decreasing_in_window(self):
+        df = generate(
+            duration_minutes=1440,
+            interval_seconds=60,
+            scenario="memory_leak",
+            scenario_start_minute=100,
+            anomaly_duration_minutes=60,
+            seed=2,
+        )
+        window = df["memory_pct"].iloc[100:160]
+        assert (window.diff().dropna() >= 0).all()
+        # Real ramp, not a flat line: last sample clearly above first.
+        assert window.iloc[-1] > window.iloc[0] + 10
+
+    def test_memory_leak_saturates_toward_100(self):
+        df = generate(
+            duration_minutes=1440,
+            interval_seconds=60,
+            scenario="memory_leak",
+            scenario_start_minute=100,
+            anomaly_duration_minutes=200,
+            seed=2,
+        )
+        window = df["memory_pct"].iloc[100:300]
+        assert window.iloc[-1] >= 95.0
+        assert window.iloc[-1] <= 100.0
+
+    def test_cpu_spike_mean_elevated_in_window(self):
+        df = generate(
+            duration_minutes=1440,
+            interval_seconds=60,
+            scenario="cpu_spike",
+            scenario_start_minute=50,
+            anomaly_duration_minutes=30,
+            seed=3,
+        )
+        inside = df["cpu_pct"].iloc[50:80]
+        outside = df["cpu_pct"].drop(df.index[50:80])
+        assert inside.mean() > outside.mean() + 20
+
+    def test_cpu_spike_stays_within_bounds(self):
+        df = generate(
+            duration_minutes=1440,
+            interval_seconds=60,
+            scenario="cpu_spike",
+            scenario_start_minute=50,
+            anomaly_duration_minutes=30,
+            seed=6,
+        )
+        inside = df["cpu_pct"].iloc[50:80]
+        assert (inside >= 85.0).all()
+        assert (inside <= 100.0).all()
+
+    def test_disk_fill_monotonic_non_decreasing_in_window(self):
+        df = generate(
+            duration_minutes=1440,
+            interval_seconds=60,
+            scenario="disk_fill",
+            scenario_start_minute=200,
+            anomaly_duration_minutes=120,
+            seed=4,
+        )
+        window = df["disk_pct"].iloc[200:320]
+        assert (window.diff().dropna() >= 0).all()
+        assert window.iloc[-1] > window.iloc[0] + 10
+
+    def test_disk_fill_no_recovery_after_window_start_within_window(self):
+        df = generate(
+            duration_minutes=1440,
+            interval_seconds=60,
+            scenario="disk_fill",
+            scenario_start_minute=200,
+            anomaly_duration_minutes=120,
+            seed=9,
+        )
+        window = df["disk_pct"].iloc[200:320]
+        # Every later sample is >= every earlier sample's running max — i.e.
+        # no decline at any point inside the window.
+        assert (window.to_numpy() == np.maximum.accumulate(window.to_numpy())).all()
+
+    def test_service_down_requests_crash_to_floor_in_window(self):
+        df = generate(
+            duration_minutes=1440,
+            interval_seconds=60,
+            scenario="service_down",
+            scenario_start_minute=300,
+            anomaly_duration_minutes=15,
+            seed=5,
+        )
+        window_rps = df["requests_per_sec"].iloc[300:315]
+        assert (window_rps > 0).all()
+        assert (window_rps <= 1.0).all()
+
+    def test_service_down_latency_spikes_in_window(self):
+        df = generate(
+            duration_minutes=1440,
+            interval_seconds=60,
+            scenario="service_down",
+            scenario_start_minute=300,
+            anomaly_duration_minutes=15,
+            seed=5,
+        )
+        window_latency = df["latency_ms"].iloc[300:315]
+        baseline_latency = df["latency_ms"].drop(df.index[300:315]).mean()
+        assert window_latency.mean() > baseline_latency * 2
