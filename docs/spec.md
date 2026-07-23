@@ -1,142 +1,144 @@
-# Argos — Product Spec
+# Spec del proyecto — AIOps predictivo (nombre tentativo: Argos)
 
-> This is the project's living design document (distinct from the SDD
-> process artifacts persisted separately for change `phase1-setup`). It
-> describes Argos end to end and details Phase 1, which this repository
-> currently implements.
+> Este documento es el spec inicial para arrancar el proyecto con Claude Code
+> siguiendo Spec-Driven Development. Contiene la visión completa del proyecto
+> y el detalle accionable de la Fase 1. Las fases siguientes se detallarán en
+> specs propios cuando llegue el momento (no hace falta resolverlas ahora).
+>
+> **Nota de esta revisión**: durante el ciclo de SDD de la Fase 1 se
+> corrigieron dos cosas respecto al borrador original de este documento,
+> ambas registradas como decisiones explícitas del usuario: (1) la versión
+> de Python objetivo pasó de `3.11+` a `3.14` (verificado soporte de wheels
+> en pandas/numpy/scikit-learn), y (2) la firma de `generate()` en 5.3 fue
+> corregida a la forma que el usuario definió originalmente, después de que
+> una fase intermedia de SDD la alterara sin autorización. El resto del
+> documento se mantiene tal como fue escrito.
 
-## 1. Vision
+## 1. Visión general
 
-Argos is a predictive AIOps system. It ingests system metrics, learns
-what "normal" operation looks like, detects anomalies before they become
-incidents, and — eventually — diagnoses the likely root cause through an
-LLM-driven agent workflow. The project is built incrementally: each phase
-ships a working, testable slice, starting from synthetic data generation
-and ending in a deployed, agent-assisted diagnosis service.
+Sistema de monitoreo predictivo de infraestructura: detecta anomalías en
+métricas de sistema (CPU, memoria, disco, latencia) usando un modelo de
+machine learning, y un agente conversacional explica qué pasó y qué se
+podría hacer, usando sus propias herramientas expuestas vía MCP.
 
-## 2. Architecture (3 layers)
+**Objetivos del proyecto:**
+- Aprender e integrar de punta a punta: pandas, scikit-learn, FastAPI,
+  LangChain, MCP y deploy en GCP.
+- Producir un proyecto demostrable en el CV, con un demo público que
+  cualquier persona pueda tocar sin acceso a infraestructura real.
+- Reforzar el roadmap DevOps en curso (Docker, Terraform, CI/CD,
+  Prometheus/Grafana) aplicándolo a un caso de uso real en vez de ejercicios
+  aislados.
 
-1. **Data / Ingestion layer** — produces or collects system metrics
-   (`cpu_pct`, `memory_pct`, `disk_pct`, `latency_ms`, `requests_per_sec`).
-   In early phases this is a deterministic **synthetic metrics
-   generator** (this repo, Phase 1); later phases may add real ingestion
-   sources. A pandas-based feature pipeline derives model-ready features
-   from raw metrics.
-2. **Detection / Service layer** — a scikit-learn **Isolation Forest**
-   anomaly detector trained on the feature pipeline's output, served
-   behind a **FastAPI** HTTP service for scoring incoming metric windows.
-3. **Diagnosis / Agent layer** — a **LangChain** agent that consumes a
-   custom **MCP (Model Context Protocol) server** exposing metrics,
-   detection results, and system context as tools, producing a
-   human-readable diagnosis when an anomaly is flagged.
+## 2. Arquitectura (resumen)
 
-## 3. Tech Stack
+Tres capas secuenciales:
 
-| Concern | Choice |
+1. **Datos e ingesta** — un generador sintético produce métricas de sistema
+   con estacionalidad y ruido realista, con la opción de inyectar escenarios
+   de anomalía. Un pipeline en pandas limpia y genera features (ventanas
+   móviles, lags).
+2. **Detección y servicio** — un modelo scikit-learn (Isolation Forest)
+   detecta anomalías sobre los features. Se sirve vía FastAPI
+   (`/predict`, `/alerts`).
+3. **Agente de diagnóstico** — un agente LangChain consume un servidor MCP
+   propio (herramientas: historial de métricas, diagnóstico simulado,
+   sugerencia de remediación) y devuelve una explicación en lenguaje natural.
+   Alimenta un dashboard/chat de alertas.
+
+Deploy: Docker → GitHub Actions (CI/CD) → GCP (Cloud Run, Terraform para
+infra, Artifact Registry). Todo esto se aborda en fases posteriores.
+
+## 3. Stack tecnológico
+
+| Capa | Tecnología |
 |---|---|
-| Language | Python `>=3.14` |
-| Dependency management | `uv` |
-| Data / features | `pandas`, `numpy` |
-| Detection model | `scikit-learn` (Isolation Forest) |
-| Detection service | `FastAPI` |
-| Diagnosis agent | `LangChain` |
-| Agent-tool interface | Custom MCP server |
-| Testing | `pytest` (Strict TDD) |
-| Linting | `ruff` |
-| Containerization | Docker |
-| CI/CD | GitHub Actions |
-| Deployment target | GCP — Cloud Run, provisioned via Terraform |
+| Datos/features | pandas, numpy |
+| Modelo | scikit-learn |
+| API | FastAPI |
+| Agente | LangChain |
+| Herramientas del agente | MCP (servidor propio) |
+| Infra/deploy | Docker, Terraform, GitHub Actions, GCP (Cloud Run) |
+| Testing | pytest |
+| Gestión de dependencias | uv |
 
-## 4. Roadmap (10 phases)
+## 4. Fases del proyecto (mapa completo, alto nivel)
 
-Only **Phase 1** is detailed in this document; later phases are scoped
-at a high level and will be detailed in their own spec revision when
-they start.
+1. **Setup + generador sintético** ← *implementado en este repo (PR1-PR3)*
+2. Pipeline de features con pandas sobre los datos generados
+3. Entrenamiento y evaluación del modelo scikit-learn
+4. Servicio FastAPI (`/predict`, `/ingest`, `/alerts`)
+5. Servidor MCP propio con herramientas de diagnóstico
+6. Agente LangChain que consume el MCP server
+7. Orquestación (scheduler + disparo de alertas)
+8. Dashboard/demo interactivo (selector de escenarios)
+9. Deploy en GCP (Docker, Terraform, GitHub Actions)
+10. Pulido para portfolio (README, demo grabada, métricas de resultado)
 
-| Phase | Goal |
-|---|---|
-| 1 | Repo scaffold + deterministic synthetic system-metrics generator |
-| 2 | pandas feature engineering pipeline over generated/ingested metrics |
-| 3 | Isolation Forest anomaly detection model — training + evaluation |
-| 4 | FastAPI detection service exposing the trained model for scoring |
-| 5 | Custom MCP server exposing metrics/detection context as agent tools |
-| 6 | LangChain diagnosis agent consuming the MCP server |
-| 7 | End-to-end integration: ingestion -> detection -> diagnosis wiring |
-| 8 | Containerization (Docker) |
-| 9 | CI/CD pipeline (GitHub Actions) |
-| 10 | Deployment to GCP (Cloud Run, Terraform) |
+Cada fase siguiente tendrá su propio spec cuando la empecemos. No hace falta
+diseñarlas en detalle ahora.
 
-Explicitly OUT of scope for Phase 1: the ML model (Isolation Forest),
-the FastAPI service, the LangChain agent, the MCP server, and
-Docker/CI/Terraform. Those belong to later phases and this repository
-deliberately has no `models/`, `api/`, `agent/`, or `mcp/` folders yet.
+---
 
-## 5. Phase 1 Detail — Repo Scaffold & Synthetic Metrics Generator
+## 5. FASE 1 — Setup + generador sintético (detalle accionable)
 
-### 5.1 Folder Structure
+### 5.1 Objetivo de la fase
+
+Dejar el repo inicializado y un generador de métricas sintéticas
+funcionando, testeado y explorado en un notebook. Esta es la base de datos
+que van a usar todas las fases siguientes (entrenamiento del modelo,
+demo pública, etc.).
+
+### 5.2 Estructura de carpetas propuesta
 
 ```
-.
-├── pyproject.toml
+argos/
 ├── README.md
-├── docs/
-│   └── spec.md
+├── pyproject.toml
 ├── src/
 │   └── argos/
 │       ├── __init__.py
 │       └── data/
 │           ├── __init__.py
-│           ├── generator.py
-│           └── scenarios.py
+│           ├── generator.py      # motor de generación sintética
+│           └── scenarios.py      # definición de escenarios de anomalía
 ├── tests/
 │   └── test_generator.py
-└── notebooks/
-    └── 01_exploracion_datos_sinteticos.ipynb
+├── notebooks/
+│   └── 01_exploracion_datos_sinteticos.ipynb
+├── docs/
+│   └── spec.md                   # este archivo
+└── .github/
+    └── workflows/                 # vacío, se usa en fase 9
 ```
 
-No `models/`, `api/`, `agent/`, or `mcp/` folders exist yet — they are
-introduced in the phases that need them.
+Las carpetas de `models/`, `api/`, `agent/`, `mcp/` se crean recién cuando
+lleguen esas fases, para no dejar código muerto dando vueltas.
 
-### 5.2 Functional Requirements — Metrics
+### 5.3 Requisitos funcionales del generador
 
-The generator produces exactly 5 columns, one row per timestamp:
+Métricas base a simular (una fila por timestamp):
+- `cpu_pct` (0-100)
+- `memory_pct` (0-100)
+- `disk_pct` (0-100)
+- `latency_ms` (positivo, con cola larga)
+- `requests_per_sec` (positivo)
 
-| Metric | Bounds | Shape |
-|---|---|---|
-| `cpu_pct` | `[0, 100]` | daily sinusoid + Gaussian noise |
-| `memory_pct` | `[0, 100]` | daily sinusoid + Gaussian noise |
-| `disk_pct` | `[0, 100]` | daily sinusoid + Gaussian noise |
-| `latency_ms` | `> 0` | long-tail (lognormal-style) + mild seasonal factor |
-| `requests_per_sec` | `> 0` | daily sinusoid + Gaussian noise, positive floor |
+Comportamiento del modo "normal" (sin anomalía):
+- Estacionalidad diaria simple (ej: más tráfico en horario laboral) usando
+  una onda senoidal + ruido gaussiano.
+- Valores acotados a rangos realistas (nunca negativos, nunca fuera de 0-100
+  para los porcentajes).
 
-The output index is a tz-aware **UTC** `pandas.DatetimeIndex`, anchored
-to `start_time`'s time-of-day (or a fixed epoch when `start_time` is
-`None` — see 5.4). Randomness is sourced exclusively from an injected
-`np.random.default_rng(seed)` — never from numpy's legacy global random
-state — so identical parameters (including `seed`) always reproduce an
-identical DataFrame.
+Escenarios de anomalía a implementar (mínimo estos 4):
+- `memory_leak`: memoria sube de forma monótona hasta acercarse al 100%.
+- `cpu_spike`: pico abrupto y breve de CPU, vuelve a la normalidad.
+- `disk_fill`: disco sube linealmente hasta llenarse.
+- `service_down`: `requests_per_sec` y `latency_ms` caen/se disparan
+  simulando una caída de servicio.
 
-### 5.3 Anomaly Scenarios
-
-Four self-registered anomaly scenarios, each overriding only its target
-column(s) within a resolved `[scenario_start_minute, scenario_start_minute
-+ anomaly_duration_minutes)` window; everything outside the window stays
-normal-mode:
-
-| Scenario | Default duration | Signature |
-|---|---|---|
-| `memory_leak` | 60 min | `memory_pct` ramps monotonically non-decreasing toward saturation |
-| `cpu_spike` | 15 min | `cpu_pct` jumps to an abrupt, brief spike well above baseline |
-| `disk_fill` | 120 min | `disk_pct` accumulates monotonically non-decreasing, no plateau/decline |
-| `service_down` | 10 min | `requests_per_sec` crashes near zero (floor `0.01`) and `latency_ms` spikes sharply |
-
-Adding a new scenario means adding one `@register(...)`-decorated
-function to `scenarios.py` — `generator.py` never needs to change.
-
-### 5.4 `generate()` Signature (corrected)
-
-The public signature, as formally corrected during this SDD cycle after
-an unauthorized drift was introduced and caught before Phase 1 PR2:
+API pública (firma corregida durante el ciclo de SDD de esta fase — ver
+nota al inicio del documento):
 
 ```python
 def generate(
@@ -145,51 +147,59 @@ def generate(
     scenario: str | None = None,
     scenario_start_minute: int | None = None,
     anomaly_duration_minutes: int | None = None,
-    start_time: datetime | pd.Timestamp | None = None,
+    start_time: datetime | pandas.Timestamp | None = None,
     seed: int | None = None,
-) -> pd.DataFrame: ...
+) -> pandas.DataFrame:
+    ...
 ```
 
-- `duration_minutes` is **required** and positional-or-keyword (no
-  default, not keyword-only).
-- `interval_seconds` **defaults to `10`**.
-- `scenario` **defaults to `None`**, the sole normal-mode sentinel — the
-  string `"normal"` is not a special-cased alias. Any non-`None` value is
-  looked up in the scenario registry; an unregistered name raises
-  `ValueError`.
-- `scenario_start_minute` and `anomaly_duration_minutes` default to
-  `None`; when `anomaly_duration_minutes` is `None`, the scenario's own
-  default duration is used (an explicit `0` is honored as a genuine
-  zero-length window, not silently replaced by the default).
-- `start_time` defaults to `None`, which resolves to a fixed UTC anchor
-  (`2024-01-01T00:00:00Z`) — never wall-clock.
-- `seed` defaults to `None`.
+- Sin `scenario`, genera solo datos normales.
+- Con `scenario`, inyecta el patrón de anomalía a partir de
+  `scenario_start_minute` (o en un punto aleatorio si no se especifica).
+- `anomaly_duration_minutes` controla el largo de la ventana de anomalía
+  (default: el valor por escenario definido en `scenarios.py`; `0` es un
+  valor explícito válido y produce una ventana de largo cero, no el
+  default del escenario).
+- `start_time` ancla la estacionalidad diaria; por default es un epoch UTC
+  fijo (`2024-01-01T00:00:00Z`), nunca la hora de reloj real, para que
+  `seed` garantice reproducibilidad total.
+- `seed` para reproducibilidad determinística en tests (vía
+  `numpy.random.Generator`, no el estado global legado de `numpy.random`).
 
-Validation is fail-fast (`ValueError`, never silently clipped/corrected)
-when `scenario_start_minute + anomaly_duration_minutes > duration_minutes`,
-or when `(duration_minutes * 60) % interval_seconds != 0`.
+Validación fail-fast: `generate()` lanza `ValueError` (nunca recorta ni
+corrige en silencio) si `scenario_start_minute + anomaly_duration_minutes`
+supera `duration_minutes`, o si `duration_minutes * 60` no es divisible por
+`interval_seconds`.
 
-### 5.5 Definition of Done
+### 5.4 Definition of Done
 
-- `uv sync` installs cleanly and `import argos.data.generator` succeeds.
-- `generate()` matches the corrected signature exactly (name, order,
-  kinds, defaults — enforced by an `inspect.signature` contract test).
-- Normal mode produces all 5 columns within their documented bounds.
-- Each of the 4 anomaly scenarios produces its documented in-window
-  signature with no leakage outside the window.
-- Both validation `ValueError` cases are enforced.
-- Same-seed calls (normal mode and scenario mode) reproduce identical
-  DataFrames.
-- `tests/test_generator.py` covers all of the above; written before
-  implementation (Strict TDD).
-- `README.md` documents install + usage; `docs/spec.md` (this file) is
-  up to date.
-- `notebooks/01_exploracion_datos_sinteticos.ipynb` renders a plot for
-  normal mode and each of the 4 anomaly scenarios when run top to bottom.
+- [x] Repo inicializado con la estructura de carpetas de arriba
+- [x] `pyproject.toml` con dependencias base (pandas, numpy) y dev
+      (pytest, ruff), Python `>=3.14`
+- [x] `generator.py` implementa `generate()` con modo normal + los 4
+      escenarios de anomalía
+- [x] `scenarios.py` separa la definición de cada escenario del motor base
+      (fácil agregar un escenario nuevo sin tocar `generator.py`)
+- [x] Tests unitarios: datos normales están dentro de rango esperado; cada
+      escenario produce efectivamente el patrón esperado (ej: en
+      `memory_leak`, `memory_pct` es monótonamente creciente durante la
+      ventana de anomalía)
+- [x] Notebook que grafica cada escenario para inspección visual
+- [x] README con instrucciones de instalación (`uv sync`) y un ejemplo de
+      uso de `generate()`
 
-### 5.6 Out of Scope (Phase 1)
+### 5.5 Fuera de alcance en esta fase
 
-The ML model (Isolation Forest), the FastAPI detection service, the
-LangChain diagnosis agent, the custom MCP server, and Docker/CI/Terraform
-deployment tooling are all explicitly out of scope for Phase 1 and are
-addressed in later roadmap phases (Section 4).
+No se tocó en fase 1: modelo de ML, FastAPI, agente, MCP, Docker, deploy.
+Quedan para su fase correspondiente.
+
+### 5.6 Notas para el agente
+
+- Python 3.14, gestión de dependencias con `uv`.
+- Type hints en todas las funciones públicas.
+- Docstrings y nombres de variables en inglés (estándar para un repo de
+  portfolio internacional); el README va bilingüe.
+- Tests con `pytest`, TDD estricto (test antes que implementación).
+- Timestamps: `pandas.Timestamp` con timezone UTC (decisión tomada durante
+  el ciclo de SDD). RNG: `numpy.random.Generator` vía
+  `np.random.default_rng(seed)` (decisión tomada durante el ciclo de SDD).
