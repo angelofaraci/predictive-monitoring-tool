@@ -69,6 +69,11 @@ resource "azurerm_container_app" "main" {
     }
   }
 
+  registry {
+    server   = azurerm_container_registry.main.login_server
+    identity = "System"
+  }
+
   template {
     min_replicas = 0
 
