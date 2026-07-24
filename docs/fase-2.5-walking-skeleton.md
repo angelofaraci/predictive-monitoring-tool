@@ -1,92 +1,93 @@
-# Spec — Fase 2.5: Walking skeleton (deploy + CI/CD)
+# Spec — Phase 2.5: Walking skeleton (deploy + CI/CD)
 
-## 1. Objetivo de la fase
+## 1. Phase objective
 
-Probar el camino completo de despliegue de punta a punta —Terraform provisiona
-la infraestructura en Azure, un contenedor mínimo corre en esa infraestructura,
-y un push a `main` lo reconstruye y lo despliega automáticamente— antes de que
-exista ningún modelo de ML real. Es deliberadamente "flaco": una sola ruta
-`/health`, sin lógica de negocio. Si este esqueleto camina, las fases
-siguientes (modelo, agente) se enchufan sobre una base de deploy ya probada.
+Test the full deployment path end-to-end — Terraform provisions the
+infrastructure on Azure, a minimal container runs on that infrastructure,
+and a push to `main` automatically rebuilds and redeploys it — before any
+real ML model exists. It is deliberately "thin": a single `/health` route,
+with no business logic. If this skeleton walks, the following phases
+(model, agent) plug into an already-proven deploy foundation.
 
-## 2. Arquitectura: stack de Terraform (PR1)
+## 2. Architecture: Terraform stack (PR1)
 
-`infra/terraform/` (estado local, sin backend remoto) provisiona:
+`infra/terraform/` (local state, no remote backend) provisions:
 
-| Recurso | Rol |
+| Resource | Role |
 |---|---|
-| `azurerm_resource_group` | Contenedor de todos los recursos (`predictive-monitoring-tool-rg` por defecto) |
-| `azurerm_container_registry` (Basic) | Registro de imágenes; nombre único global vía `locals.acr_suffix` (hash determinístico del subscription ID) |
-| `azurerm_log_analytics_workspace` + `azurerm_container_app_environment` | Entorno de Container Apps y sus logs |
-| `azurerm_container_app` | La app en sí — ingress externo, `target_port=8000`, identidad system-assigned, arranca con una imagen pública placeholder (`mcr.microsoft.com/azuredocs/containerapps-helloworld`) para que `terraform apply` funcione solo, sin depender de CI |
-| `azurerm_role_assignment` (AcrPull) | La identidad de la Container App puede tirar imágenes del ACR |
-| `azuread_application` + `azuread_service_principal` + `azuread_application_federated_identity_credential` | Confianza OIDC para que GitHub Actions se autentique sin secretos |
-| `azurerm_role_assignment` (Contributor, scope = resource group) | Permiso que ese SP federado necesita para desplegar |
-| `null_resource.sync_github_client_id_secret` (`local-exec`) | Corre `gh secret set AZURE_CLIENT_ID` con el `gh` CLI local cada vez que cambia el `client_id` de la app (ej. tras un `destroy`/`apply`) |
+| `azurerm_resource_group` | Container for all resources (`predictive-monitoring-tool-rg` by default) |
+| `azurerm_container_registry` (Basic) | Image registry; globally unique name via `locals.acr_suffix` (deterministic hash of the subscription ID) |
+| `azurerm_log_analytics_workspace` + `azurerm_container_app_environment` | Container Apps environment and its logs |
+| `azurerm_container_app` | The app itself — external ingress, `target_port=8000`, system-assigned identity, starts with a public placeholder image (`mcr.microsoft.com/azuredocs/containerapps-helloworld`) so that `terraform apply` works on its own, without depending on CI |
+| `azurerm_role_assignment` (AcrPull) | The Container App's identity can pull images from the ACR |
+| `azuread_application` + `azuread_service_principal` + `azuread_application_federated_identity_credential` | OIDC trust so GitHub Actions can authenticate without secrets |
+| `azurerm_role_assignment` (Contributor, scope = resource group) | Permission that federated SP needs in order to deploy |
+| `null_resource.sync_github_client_id_secret` (`local-exec`) | Runs `gh secret set AZURE_CLIENT_ID` with the local `gh` CLI every time the app's `client_id` changes (e.g., after a `destroy`/`apply`) |
 
-Todos los nombres, la región y los SKUs son variables (`infra/terraform/variables.tf`) — nada hardcodeado en los `resource` blocks.
+All names, the region, and the SKUs are variables (`infra/terraform/variables.tf`) — nothing hardcoded in the `resource` blocks.
 
-## 3. Autenticación OIDC — qué automatiza Terraform y qué queda manual
+## 3. OIDC authentication — what Terraform automates and what stays manual
 
-Terraform crea la App Registration, el Service Principal y la credencial
-federada (subject `repo:angelofaraci/predictive-monitoring-tool:ref:refs/heads/main`,
-issuer `https://token.actions.githubusercontent.com`) — **no hace falta crear
-nada de esto a mano en el portal**. Pero dos pasos quedan fuera del alcance de
-un `terraform apply`:
+Terraform creates the App Registration, the Service Principal, and the
+federated credential (subject `repo:angelofaraci/predictive-monitoring-tool:ref:refs/heads/main`,
+issuer `https://token.actions.githubusercontent.com`) — **none of this needs
+to be created by hand in the portal**. But two steps remain outside the
+scope of a `terraform apply`:
 
-1. **Permisos para correr `terraform apply` la primera vez.** Crear
-   `azuread_application`/`azuread_service_principal` requiere un rol de
-   Azure AD con privilegios de directorio (p. ej. *Application Administrator*
-   o *Cloud Application Administrator*) además del rol de Azure habitual. Quien
-   corra el `apply` inicial necesita ese permiso asignado de antemano.
-2. **Cargar los outputs como secrets del repo de GitHub.** Terraform no tiene
-   (ni debe tener) acceso al repo de GitHub. `AZURE_CLIENT_ID` cambia cada vez
-   que se recrea `azuread_application.github_actions` (ej. tras un
-   `destroy`/`apply`), así que `null_resource.sync_github_client_id_secret` lo
-   sincroniza solo, corriendo `gh secret set` localmente al final de cada
-   `terraform apply` (requiere `gh` instalado y autenticado en la máquina que
-   corre `apply`). `AZURE_TENANT_ID` y `AZURE_SUBSCRIPTION_ID` no cambian nunca
-   (son del tenant/subscription, no de un recurso creado), así que se cargan
-   una sola vez a mano:
+1. **Permissions to run `terraform apply` the first time.** Creating
+   `azuread_application`/`azuread_service_principal` requires an Azure AD
+   role with directory privileges (e.g., *Application Administrator* or
+   *Cloud Application Administrator*) in addition to the usual Azure role.
+   Whoever runs the initial `apply` needs that permission assigned
+   beforehand.
+2. **Loading the outputs as GitHub repo secrets.** Terraform does not (and
+   should not) have access to the GitHub repo. `AZURE_CLIENT_ID` changes
+   every time `azuread_application.github_actions` is recreated (e.g., after
+   a `destroy`/`apply`), so `null_resource.sync_github_client_id_secret`
+   syncs it automatically, running `gh secret set` locally at the end of
+   every `terraform apply` (requires `gh` installed and authenticated on the
+   machine running `apply`). `AZURE_TENANT_ID` and `AZURE_SUBSCRIPTION_ID`
+   never change (they belong to the tenant/subscription, not to a created
+   resource), so they are loaded once by hand:
 
    ```bash
    terraform -chdir=infra/terraform output -raw azure_tenant_id
    terraform -chdir=infra/terraform output -raw azure_subscription_id
 
-   gh secret set AZURE_TENANT_ID --body "<valor>"
-   gh secret set AZURE_SUBSCRIPTION_ID --body "<valor>"
+   gh secret set AZURE_TENANT_ID --body "<value>"
+   gh secret set AZURE_SUBSCRIPTION_ID --body "<value>"
    ```
 
-Además, antes de aplicar, verificar que la región elegida (`East US` por
-defecto) soporte Container Apps y que los resource providers necesarios
+Additionally, before applying, verify that the chosen region (`East US` by
+default) supports Container Apps and that the required resource providers
 (`Microsoft.App`, `Microsoft.OperationalInsights`, `Microsoft.ContainerRegistry`)
-estén registrados en la subscription.
+are registered on the subscription.
 
-## 4. La app y el pipeline (PR2)
+## 4. The app and the pipeline (PR2)
 
-- `src/predictive_monitoring_tool/api/main.py`: FastAPI mínima, una sola ruta
-  `GET /health` -> `{"status": "ok"}`, desarrollada con TDD estricto
-  (`tests/test_health.py` escrito antes de que el módulo existiera).
-- `Dockerfile`: single-stage sobre `ghcr.io/astral-sh/uv:python3.14-bookworm-slim`,
-  `uv sync --frozen --no-dev`, corre `uvicorn` en el puerto 8000 (mismo
-  `target_port` que la Container App de Terraform).
-- `.github/workflows/deploy.yml`: en push a `main` (o disparo manual),
-  autentica a Azure vía OIDC, resuelve el login server del ACR (su nombre
-  no es determinístico, así que se busca en runtime con `az acr list`),
-  buildea y pushea la imagen taggeada con `github.sha`, corre
-  `az containerapp update --image ...` y por último hace `curl` a `/health`
-  con reintentos (una revisión nueva de Container Apps tarda unos segundos
-  en estar lista).
+- `src/predictive_monitoring_tool/api/main.py`: minimal FastAPI, a single
+  `GET /health` route -> `{"status": "ok"}`, developed with strict TDD
+  (`tests/test_health.py` written before the module existed).
+- `Dockerfile`: single-stage build on `ghcr.io/astral-sh/uv:python3.14-bookworm-slim`,
+  `uv sync --frozen --no-dev`, runs `uvicorn` on port 8000 (same
+  `target_port` as the Terraform Container App).
+- `.github/workflows/deploy.yml`: on push to `main` (or manual trigger),
+  authenticates to Azure via OIDC, resolves the ACR login server (its name
+  is not deterministic, so it's looked up at runtime with `az acr list`),
+  builds and pushes the image tagged with `github.sha`, runs
+  `az containerapp update --image ...`, and finally `curl`s `/health`
+  with retries (a new Container Apps revision takes a few seconds to
+  become ready).
 
-### Cómo disparar un deploy
+### How to trigger a deploy
 
 ```bash
 git push origin main
-# o, sin nuevo commit:
+# or, without a new commit:
 gh workflow run deploy.yml
 ```
 
-## 5. Estructura de archivos nuevos
+## 5. New file structure
 
 ```
 Dockerfile
@@ -99,8 +100,8 @@ tests/
 └── test_health.py
 ```
 
-## 6. Fuera de alcance en esta fase
+## 6. Out of scope for this phase
 
-No hay modelo, ni agente, ni MCP, ni backend remoto de Terraform. El estado de
-Terraform es local (`Fase 2.5`); un backend remoto con locking queda para una
-fase posterior si el equipo crece.
+There is no model, no agent, no MCP, and no remote Terraform backend.
+Terraform state is local (`Phase 2.5`); a remote backend with locking is
+left for a later phase if the team grows.
