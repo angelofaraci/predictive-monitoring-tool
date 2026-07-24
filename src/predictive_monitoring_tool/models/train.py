@@ -93,7 +93,7 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     result = train_model(train_df)
 
-    metrics = evaluate(result, train_df, eval_df)
+    metrics, threshold_info = evaluate(result, train_df, eval_df)
     metrics_json = {
         name: {
             "precision": m.precision,
@@ -104,6 +104,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         }
         for name, m in metrics.items()
     }
+    threshold_json = {
+        "value": threshold_info.value,
+        "criterion": threshold_info.criterion,
+    }
 
     columns = result.feature_columns
     row = np.ascontiguousarray(
@@ -111,7 +115,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     latency = measure_predict_latency(result.model, row)
 
-    save_model(result, metrics_json, latency)
+    save_model(result, metrics_json, latency, threshold=threshold_json)
     return 0
 
 
