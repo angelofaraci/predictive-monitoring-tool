@@ -6,8 +6,8 @@ on:
   workflow_dispatch: {}
 
 env:
-  RESOURCE_GROUP: argos-rg
-  CONTAINER_APP_NAME: argos-app
+  RESOURCE_GROUP: predictive-monitoring-tool-rg
+  CONTAINER_APP_NAME: predictive-monitoring-tool-app
   IMAGE_NAME: predictive-monitoring-tool
 
 permissions:

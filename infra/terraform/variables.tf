@@ -1,7 +1,7 @@
 variable "project" {
   description = "Project name used as a prefix/tag for all provisioned resources."
   type        = string
-  default     = "argos"
+  default     = "predictive-monitoring-tool"
 }
 
 variable "location" {

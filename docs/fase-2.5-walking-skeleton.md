@@ -15,13 +15,14 @@ siguientes (modelo, agente) se enchufan sobre una base de deploy ya probada.
 
 | Recurso | Rol |
 |---|---|
-| `azurerm_resource_group` | Contenedor de todos los recursos (`argos-rg` por defecto) |
+| `azurerm_resource_group` | Contenedor de todos los recursos (`predictive-monitoring-tool-rg` por defecto) |
 | `azurerm_container_registry` (Basic) | Registro de imágenes; nombre único global vía `locals.acr_suffix` (hash determinístico del subscription ID) |
 | `azurerm_log_analytics_workspace` + `azurerm_container_app_environment` | Entorno de Container Apps y sus logs |
 | `azurerm_container_app` | La app en sí — ingress externo, `target_port=8000`, identidad system-assigned, arranca con una imagen pública placeholder (`mcr.microsoft.com/azuredocs/containerapps-helloworld`) para que `terraform apply` funcione solo, sin depender de CI |
 | `azurerm_role_assignment` (AcrPull) | La identidad de la Container App puede tirar imágenes del ACR |
 | `azuread_application` + `azuread_service_principal` + `azuread_application_federated_identity_credential` | Confianza OIDC para que GitHub Actions se autentique sin secretos |
 | `azurerm_role_assignment` (Contributor, scope = resource group) | Permiso que ese SP federado necesita para desplegar |
+| `null_resource.sync_github_client_id_secret` (`local-exec`) | Corre `gh secret set AZURE_CLIENT_ID` con el `gh` CLI local cada vez que cambia el `client_id` de la app (ej. tras un `destroy`/`apply`) |
 
 Todos los nombres, la región y los SKUs son variables (`infra/terraform/variables.tf`) — nada hardcodeado en los `resource` blocks.
 
@@ -39,15 +40,19 @@ un `terraform apply`:
    o *Cloud Application Administrator*) además del rol de Azure habitual. Quien
    corra el `apply` inicial necesita ese permiso asignado de antemano.
 2. **Cargar los outputs como secrets del repo de GitHub.** Terraform no tiene
-   (ni debe tener) acceso al repo de GitHub, así que los 3 outputs de
-   `outputs.tf` se copian a mano:
+   (ni debe tener) acceso al repo de GitHub. `AZURE_CLIENT_ID` cambia cada vez
+   que se recrea `azuread_application.github_actions` (ej. tras un
+   `destroy`/`apply`), así que `null_resource.sync_github_client_id_secret` lo
+   sincroniza solo, corriendo `gh secret set` localmente al final de cada
+   `terraform apply` (requiere `gh` instalado y autenticado en la máquina que
+   corre `apply`). `AZURE_TENANT_ID` y `AZURE_SUBSCRIPTION_ID` no cambian nunca
+   (son del tenant/subscription, no de un recurso creado), así que se cargan
+   una sola vez a mano:
 
    ```bash
-   terraform -chdir=infra/terraform output -raw azure_client_id
    terraform -chdir=infra/terraform output -raw azure_tenant_id
    terraform -chdir=infra/terraform output -raw azure_subscription_id
 
-   gh secret set AZURE_CLIENT_ID --body "<valor>"
    gh secret set AZURE_TENANT_ID --body "<valor>"
    gh secret set AZURE_SUBSCRIPTION_ID --body "<valor>"
    ```

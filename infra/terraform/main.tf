@@ -3,7 +3,8 @@ locals {
   # Default suffix is a deterministic hash of the subscription ID so re-applying
   # against local state (or losing state) never mints a colliding/orphaned ACR.
   acr_suffix = coalesce(var.acr_name_suffix, substr(sha1(data.azurerm_client_config.current.subscription_id), 0, 8))
-  acr_name   = "argosacr${local.acr_suffix}"
+  # ACR names allow only alphanumerics, so hyphens in var.project are stripped.
+  acr_name = "${replace(var.project, "-", "")}acr${local.acr_suffix}"
 
   resource_group_name    = "${var.project}-rg"
   law_name               = "${var.project}-law"
@@ -69,6 +70,8 @@ resource "azurerm_container_app" "main" {
   }
 
   template {
+    min_replicas = 0
+
     container {
       name   = var.project
       image  = var.container_image
@@ -102,7 +105,28 @@ resource "azuread_application_federated_identity_credential" "github_actions" {
   description    = "OIDC trust for GitHub Actions deploying from the main branch."
   audiences      = ["api://AzureADTokenExchange"]
   issuer         = "https://token.actions.githubusercontent.com"
-  subject        = "repo:${var.github_org}/${var.github_repo}:ref:refs/heads/main"
+  # Temporary: GitHub appends numeric owner/repo IDs to the OIDC subject
+  # claim during the grace period after a repo rename. Revert to the clean
+  # "repo:${var.github_org}/${var.github_repo}:ref:refs/heads/main" form once
+  # GitHub drops the suffixes (confirm via the Azure login OIDC subject log).
+  subject = "repo:angelofaraci@130224801/predictive-monitoring-tool@1310175532:ref:refs/heads/main"
+}
+
+# azuread_application.github_actions is recreated on every destroy/apply cycle,
+# which mints a new client_id. Keep the GitHub repo secret in sync locally via
+# the gh CLI instead of relying on someone remembering the manual step.
+resource "null_resource" "sync_github_client_id_secret" {
+  triggers = {
+    client_id = azuread_application.github_actions.client_id
+  }
+
+  provisioner "local-exec" {
+    command = "gh secret set AZURE_CLIENT_ID --body \"$CLIENT_ID\""
+
+    environment = {
+      CLIENT_ID = azuread_application.github_actions.client_id
+    }
+  }
 }
 
 # The federated identity only needs to manage resources within this
