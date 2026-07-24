@@ -14,6 +14,7 @@ COPY pyproject.toml uv.lock ./
 RUN uv sync --frozen --no-dev
 
 COPY src/ src/
+COPY models/ models/
 
 EXPOSE 8000
 
