@@ -1,16 +1,13 @@
 """Tests for the training/eval dataset assembly and persistence
-(`predictive_monitoring_tool.models.datasets`, `.persistence`).
+(`predictive_monitoring_tool.models.datasets`, `.persistence`, `.train`).
 
-Strict TDD (PR1 of sdd/phase3-model-training): these tests were written
-before `models/datasets.py` and `models/persistence.py` existed and
-reference `build_training_dataset` / `build_evaluation_dataset` /
-`feature_columns` / `feature_matrix` / `save_model` / `load_model`, which
-fail to import until those modules are created.
+Strict TDD (PR1 of sdd/phase3-model-training): the dataset/persistence
+tests below were written before `models/datasets.py` and
+`models/persistence.py` existed.
 
-`train.py`/`evaluate.py` (fit, metrics, latency) are OUT OF SCOPE for this
-PR — see PR2 of the same change. Persistence tests build a minimal
-`IsolationForest` fit directly (not via `models.train`, which does not
-exist yet).
+PR2 adds `TestTrainModel`, written before `models/train.py` exists —
+importing `train_model`/`TrainingResult`/`DEFAULT_HYPERPARAMETERS` fails
+with `ModuleNotFoundError` until that module is created.
 """
 
 from __future__ import annotations
@@ -31,6 +28,11 @@ from predictive_monitoring_tool.models.datasets import (
     feature_matrix,
 )
 from predictive_monitoring_tool.models.persistence import load_model, save_model
+from predictive_monitoring_tool.models.train import (
+    DEFAULT_HYPERPARAMETERS,
+    TrainingResult,
+    train_model,
+)
 
 
 class TestTrainingDataset:
@@ -180,6 +182,87 @@ class TestPersistence:
         assert metadata["metrics"] == metrics
         assert metadata["latency_ms"] == latency
 
+    def test_metadata_persists_the_calibrated_inference_threshold(self, tmp_path):
+        # Deviation from "contamination='auto' + predict()": Phase 4 MUST
+        # reuse this exact cutoff instead of sklearn's default predict().
+        model, columns, X = self._fit_tiny_model()
+        metrics = {"model": {"recall": 0.9}, "baseline": {"recall": 0.5}}
+        latency = {"median_ms": 0.2, "p95_ms": 0.4}
+        threshold = {
+            "value": 0.1234,
+            "criterion": "f1-optimal over eval score_samples() (grid of 200 percentiles)",
+        }
+
+        class _Result:
+            pass
+
+        result = _Result()
+        result.model = model
+        result.feature_columns = columns
+        result.hyperparameters = {"random_state": 42, "n_estimators": 10}
+        result.trained_at = "2024-01-01T00:00:00Z"
+
+        _, metadata_path = save_model(
+            result, metrics, latency, directory=tmp_path, threshold=threshold
+        )
+
+        with open(metadata_path) as f:
+            metadata = json.load(f)
+
+        assert metadata["threshold"] == threshold
+
+        _, loaded_metadata = load_model(directory=tmp_path)
+        assert loaded_metadata["threshold"] == threshold
+
     def test_load_missing_model_raises(self, tmp_path):
         with pytest.raises(FileNotFoundError):
             load_model(directory=tmp_path)
+
+
+class TestTrainModel:
+    """Spec: IsolationForest Training — allowlist, hyperparameters, determinism."""
+
+    def _small_train_df(self):
+        return build_training_dataset(duration_minutes=180, interval_seconds=60, seed=7)
+
+    def test_train_model_fits_on_allowlisted_features_only(self):
+        df = self._small_train_df()
+
+        result = train_model(df)
+
+        assert isinstance(result, TrainingResult)
+        assert "is_anomaly" not in result.feature_columns
+        assert "scenario" not in result.feature_columns
+        assert result.feature_columns == feature_columns(df)
+
+    def test_train_model_uses_pinned_default_hyperparameters(self):
+        df = self._small_train_df()
+
+        result = train_model(df)
+
+        assert result.hyperparameters["random_state"] == 42
+        assert result.hyperparameters["contamination"] == "auto"
+        assert result.hyperparameters["n_estimators"] == 100
+        assert result.hyperparameters["max_samples"] == 256
+        assert result.hyperparameters["n_jobs"] == 1
+        assert DEFAULT_HYPERPARAMETERS["n_estimators"] == 100
+
+    def test_train_model_fit_is_reproducible_across_runs(self):
+        df = self._small_train_df()
+        columns = feature_columns(df)
+        X = feature_matrix(df, columns)
+
+        result1 = train_model(df)
+        result2 = train_model(df)
+
+        np.testing.assert_array_equal(
+            result1.model.score_samples(X), result2.model.score_samples(X)
+        )
+
+    def test_train_model_overrides_hyperparameters_when_provided(self):
+        df = self._small_train_df()
+
+        result = train_model(df, hyperparameters={**DEFAULT_HYPERPARAMETERS, "n_estimators": 5})
+
+        assert result.hyperparameters["n_estimators"] == 5
+        assert result.model.n_estimators == 5
