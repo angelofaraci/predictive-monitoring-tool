@@ -105,7 +105,11 @@ resource "azuread_application_federated_identity_credential" "github_actions" {
   description    = "OIDC trust for GitHub Actions deploying from the main branch."
   audiences      = ["api://AzureADTokenExchange"]
   issuer         = "https://token.actions.githubusercontent.com"
-  subject        = "repo:${var.github_org}/${var.github_repo}:ref:refs/heads/main"
+  # Temporary: GitHub appends numeric owner/repo IDs to the OIDC subject
+  # claim during the grace period after a repo rename. Revert to the clean
+  # "repo:${var.github_org}/${var.github_repo}:ref:refs/heads/main" form once
+  # GitHub drops the suffixes (confirm via the Azure login OIDC subject log).
+  subject = "repo:angelofaraci@130224801/predictive-monitoring-tool@1310175532:ref:refs/heads/main"
 }
 
 # azuread_application.github_actions is recreated on every destroy/apply cycle,
