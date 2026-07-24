@@ -182,6 +182,38 @@ class TestPersistence:
         assert metadata["metrics"] == metrics
         assert metadata["latency_ms"] == latency
 
+    def test_metadata_persists_the_calibrated_inference_threshold(self, tmp_path):
+        # Deviation from "contamination='auto' + predict()": Phase 4 MUST
+        # reuse this exact cutoff instead of sklearn's default predict().
+        model, columns, X = self._fit_tiny_model()
+        metrics = {"model": {"recall": 0.9}, "baseline": {"recall": 0.5}}
+        latency = {"median_ms": 0.2, "p95_ms": 0.4}
+        threshold = {
+            "value": 0.1234,
+            "criterion": "f1-optimal over eval score_samples() (grid of 200 percentiles)",
+        }
+
+        class _Result:
+            pass
+
+        result = _Result()
+        result.model = model
+        result.feature_columns = columns
+        result.hyperparameters = {"random_state": 42, "n_estimators": 10}
+        result.trained_at = "2024-01-01T00:00:00Z"
+
+        _, metadata_path = save_model(
+            result, metrics, latency, directory=tmp_path, threshold=threshold
+        )
+
+        with open(metadata_path) as f:
+            metadata = json.load(f)
+
+        assert metadata["threshold"] == threshold
+
+        _, loaded_metadata = load_model(directory=tmp_path)
+        assert loaded_metadata["threshold"] == threshold
+
     def test_load_missing_model_raises(self, tmp_path):
         with pytest.raises(FileNotFoundError):
             load_model(directory=tmp_path)

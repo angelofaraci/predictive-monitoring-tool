@@ -28,6 +28,7 @@ def save_model(
     latency: Mapping[str, float],
     *,
     directory: Path = MODEL_DIR,
+    threshold: Mapping[str, Any] | None = None,
 ) -> tuple[Path, Path]:
     """Persist `result.model` via joblib plus a companion metadata JSON.
 
@@ -35,7 +36,15 @@ def save_model(
     `.trained_at` (the `TrainingResult` contract from `models/train.py`,
     PR2). Metadata schema (Phase 4 contract): `model_version`,
     `sklearn_version`, `trained_at`, `hyperparameters`, `feature_columns`
-    (ordered), `metrics`, `latency_ms`.
+    (ordered), `metrics`, `latency_ms`, `threshold`.
+
+    `threshold` (deviation from the original "contamination='auto' +
+    predict()" design — see spec: Inference Threshold Calibration) MUST
+    be `{"value": float, "criterion": str}` when provided — the exact
+    calibrated cutoff over `-score_samples()` that Phase 4 MUST reuse at
+    inference time instead of sklearn's default `predict()`. `None` only
+    for callers that have not computed a threshold yet (e.g. ad-hoc
+    persistence tests); production training always supplies one.
     """
     directory = Path(directory)
     directory.mkdir(parents=True, exist_ok=True)
@@ -53,6 +62,7 @@ def save_model(
         "feature_columns": list(result.feature_columns),
         "metrics": metrics,
         "latency_ms": dict(latency),
+        "threshold": dict(threshold) if threshold is not None else None,
     }
     with open(metadata_path, "w") as f:
         json.dump(metadata, f, indent=2)

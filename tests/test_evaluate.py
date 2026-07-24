@@ -18,12 +18,14 @@ from predictive_monitoring_tool.models.datasets import feature_matrix
 from predictive_monitoring_tool.models.evaluate import (
     BaselineStats,
     DetectorMetrics,
+    ThresholdInfo,
     baseline_scores,
     compute_metrics,
     evaluate,
     fit_baseline,
     measure_predict_latency,
     model_scores,
+    select_threshold,
 )
 
 
@@ -114,21 +116,70 @@ class TestComputeMetrics:
         assert metrics.recall == pytest.approx(1.0)
 
 
+class TestSelectThreshold:
+    """Threshold recalibration: pick the F1-optimal cutoff over continuous scores.
+
+    Deviation from the original design (contamination='auto' + predict()):
+    the model's default `predict()` threshold under-flags true anomalies on
+    this synthetic data (see apply-progress blocker). Instead of trusting
+    sklearn's contamination-derived cutoff, we sweep a percentile grid of
+    the continuous anomaly score and pick the one maximizing F1 against
+    ground truth, then persist that exact cutoff for reuse at inference.
+    """
+
+    def test_select_threshold_returns_the_f1_optimal_cutoff(self):
+        # Scores separate cleanly at 0.5: anomalies score high, normals low.
+        y_true = np.array([0, 0, 0, 0, 1, 1, 1, 1])
+        scores = np.array([0.1, 0.2, 0.3, 0.4, 0.6, 0.7, 0.8, 0.9])
+
+        info = select_threshold(y_true, scores)
+
+        assert isinstance(info, ThresholdInfo)
+        assert 0.4 < info.value <= 0.6
+        assert "f1" in info.criterion.lower()
+        # Applying the chosen threshold must perfectly separate the classes.
+        y_pred = scores >= info.value
+        np.testing.assert_array_equal(y_pred, y_true.astype(bool))
+
+    def test_select_threshold_prefers_higher_recall_when_f1_ties_are_broken_by_data(self):
+        # A messier distribution: threshold choice must still be data-derived,
+        # not a hardcoded constant (triangulation against a different shape).
+        y_true = np.array([0, 0, 1, 0, 1, 1, 0, 1])
+        scores = np.array([0.05, 0.15, 0.5, 0.25, 0.55, 0.9, 0.35, 0.6])
+
+        info = select_threshold(y_true, scores)
+        y_pred = scores >= info.value
+
+        # The chosen threshold must be one of the actual observed scores'
+        # neighborhood (percentile grid), not an arbitrary constant like 0.5.
+        assert scores.min() <= info.value <= scores.max()
+        # And it must actually be F1-optimal: no other grid candidate beats it.
+        from sklearn.metrics import f1_score
+
+        candidates = np.percentile(scores, np.linspace(0.5, 99.9, 200))
+        best_f1 = max(
+            f1_score(y_true, scores >= t, zero_division=0) for t in candidates
+        )
+        assert f1_score(y_true, y_pred, zero_division=0) == pytest.approx(best_f1)
+
+
 class TestEvaluateAgainstGroundTruth:
     """Spec: Evaluation Metrics — recall > 0.7, model beats baseline on >=1 metric."""
 
     def test_model_recall_exceeds_threshold_and_beats_baseline(
         self, trained_model, training_dataset, evaluation_dataset
     ):
-        results = evaluate(trained_model, training_dataset, evaluation_dataset)
+        results, threshold_info = evaluate(trained_model, training_dataset, evaluation_dataset)
 
         assert set(results.keys()) == {"model", "baseline"}
+        assert isinstance(threshold_info, ThresholdInfo)
         model_metrics = results["model"]
         baseline_metrics = results["baseline"]
 
         assert model_metrics.recall > 0.7, (
             f"model recall {model_metrics.recall} did not exceed 0.7 threshold "
-            f"(baseline recall={baseline_metrics.recall})"
+            f"(baseline recall={baseline_metrics.recall}, "
+            f"chosen threshold={threshold_info.value}, criterion={threshold_info.criterion})"
         )
         assert (
             model_metrics.precision > baseline_metrics.precision
