@@ -40,6 +40,23 @@ jobs:
       - name: ACR login
         run: az acr login --name "${{ steps.acr.outputs.login_server }}"
 
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.14"
+
+      - name: Install dependencies
+        run: uv sync --frozen --no-dev
+
+      - name: Train model
+        run: uv run python -m predictive_monitoring_tool.models.train
+
+      - name: Upload model metadata artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: model-metadata
+          path: models/*.metadata.json
+
       - name: Build and push image
         run: |
           IMAGE="${{ steps.acr.outputs.login_server }}/$IMAGE_NAME"
