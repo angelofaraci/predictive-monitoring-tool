@@ -18,3 +18,7 @@ build/
 *.tfstate.backup
 *.tfvars
 crash.log
+
+# Trained model artifacts (Phase 3) — regenerable via `models/train.py`; not committed.
+models/*.joblib
+models/*.metadata.json
