@@ -22,3 +22,6 @@ crash.log
 # Trained model artifacts (Phase 3) — regenerable via `models/train.py`; not committed.
 models/*.joblib
 models/*.metadata.json
+
+# Prometheus connection config (Phase 1.6) — holds a user-specific URL; not committed.
+config/prometheus.json
