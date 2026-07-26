@@ -31,16 +31,8 @@ class PrometheusClientError(RuntimeError):
     """Transport or protocol fault raised by `fetch_metrics()` callers."""
 
 
-def _get_json(
-    base_url: str,
-    path: str,
-    params: Mapping[str, str] | None = None,
-    *,
-    timeout: float = 5.0,
-) -> dict:
-    """`GET base_url + path` with `params`, parsed as JSON.
-
-    Rejects any scheme other than `http`/`https` — `urllib` would
+def _validate_scheme(base_url: str) -> None:
+    """Rejects any scheme other than `http`/`https` — `urllib` would
     otherwise happily open `file://` or other local-resource schemes,
     which is a real SSRF/local-file-read boundary for a user-supplied URL.
     """
@@ -50,6 +42,17 @@ def _get_json(
             f"Unsupported Prometheus URL scheme: {scheme!r}. "
             f"Only {sorted(_ALLOWED_SCHEMES)} are allowed."
         )
+
+
+def _get_json(
+    base_url: str,
+    path: str,
+    params: Mapping[str, str] | None = None,
+    *,
+    timeout: float = 5.0,
+) -> dict:
+    """`GET base_url + path` with `params`, parsed as JSON."""
+    _validate_scheme(base_url)
 
     url = base_url.rstrip("/") + path
     if params:
@@ -63,6 +66,25 @@ def _get_json(
         raise PrometheusClientError(f"Request to {url} failed: {exc}") from exc
 
     return json.loads(body)
+
+
+def _get_status(base_url: str, path: str, *, timeout: float = 5.0) -> int:
+    """`GET base_url + path`, returning only the HTTP status code.
+
+    Used for endpoints with a non-JSON body (e.g. `/-/healthy` returns
+    plain text) where only reachability, not the payload, matters.
+    """
+    _validate_scheme(base_url)
+
+    url = base_url.rstrip("/") + path
+    request = urllib.request.Request(url, method="GET")
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:  # noqa: S310
+            return response.status
+    except urllib.error.HTTPError as exc:
+        return exc.code
+    except (urllib.error.URLError, TimeoutError, OSError) as exc:
+        raise PrometheusClientError(f"Request to {url} failed: {exc}") from exc
 
 
 def query_instant(base_url: str, query: str, *, timeout: float = 5.0) -> list[dict]:
