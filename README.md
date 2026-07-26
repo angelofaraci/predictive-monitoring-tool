@@ -79,6 +79,53 @@ generate(
 Registered anomaly scenarios (see `src/predictive_monitoring_tool/data/scenarios.py`):
 `memory_leak`, `cpu_spike`, `disk_fill`, `service_down`.
 
+## Connecting to a real Prometheus / Conectar a un Prometheus real
+
+Phase 1.6 lets the tool pull metrics from your own Prometheus + node_exporter
+instead of the synthetic generator. There is no separate "wizard" script yet
+— use `test_connection()` to validate the URL, then `save_config()` to
+persist it once validation passes:
+
+```python
+from predictive_monitoring_tool.data.connection_check import test_connection
+from predictive_monitoring_tool.data.prometheus_config import save_config, PrometheusConfig
+
+result = test_connection("http://your-prometheus:9090")
+
+if result.ok:
+    print("Connected. Metrics found:", result.metrics.metrics_found)
+    save_config(PrometheusConfig(url="http://your-prometheus:9090"))
+else:
+    # `result.reachable`, `result.targets`, `result.metrics` each carry an
+    # actionable Spanish message explaining exactly what failed and why.
+    print(result.reachable.message or result.targets.message or result.metrics.message)
+```
+
+Steps:
+
+1. Make sure `node_exporter` is running and scraped by your Prometheus
+   under the job name `node` (configurable via the `job` field, or the
+   `PROMETHEUS_JOB` env var).
+2. Call `test_connection(url)` — it checks, in order: (1) is the URL
+   reachable, (2) is there at least one active `node_exporter` target, (3)
+   do the 3 core metrics (`cpu_pct`, `memory_pct`, `disk_pct`) resolve to
+   data. Any failure returns a structured result with a specific message —
+   `test_connection()` never raises for these expected configuration
+   issues.
+3. Once `result.ok` is `True`, call `save_config()` to persist the URL to
+   `config/prometheus.json` (gitignored) — no explicit save happens inside
+   `test_connection()` itself.
+4. Alternatively, set the `PROMETHEUS_URL` env var (optionally
+   `PROMETHEUS_JOB`, `PROMETHEUS_CONFIG_PATH`) to skip the file entirely;
+   env vars always take precedence over the saved file.
+5. If nothing is configured yet (`is_configured()` returns `False`), keep
+   using the Phase 1 demo generator (`generator.generate()`) — real-mode
+   wiring for `/ingest` lands in a later phase.
+
+`latency_ms` and `requests_per_sec` are optional, user-configurable
+PromQL queries (there's no standard node_exporter equivalent) — their
+absence never fails the connection check.
+
 ## Feature engineering / Ingeniería de features
 
 `predictive_monitoring_tool.data.features.build_features()` (Phase 2) turns
@@ -125,6 +172,16 @@ the architecture, the manual OIDC setup steps, and how to trigger a deploy.
 ```bash
 uv run pytest
 uv run ruff check .
+```
+
+The default `uv run pytest` run excludes the opt-in Docker-backed test
+(`tests/test_prometheus_docker.py`), which spins up a real `prom/prometheus`
++ `prom/node-exporter` via `testcontainers-python` and exercises
+`test_connection()`/`fetch_metrics()` against it. Run it explicitly
+(requires a local Docker daemon):
+
+```bash
+uv run pytest -m docker
 ```
 
 ## Exploration Notebooks / Notebooks de exploración

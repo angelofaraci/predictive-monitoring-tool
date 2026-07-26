@@ -17,6 +17,7 @@ dev = [
     "httpx>=0.28.1",
     "pytest>=8.0",
     "ruff>=0.6",
+    "testcontainers>=4.8",
 ]
 notebooks = [
     "matplotlib>=3.9",
@@ -30,3 +31,7 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/predictive_monitoring_tool"]
+
+[tool.pytest.ini_options]
+markers = ["docker: needs a local Docker daemon (opt-in)"]
+addopts = "-m 'not docker'"
