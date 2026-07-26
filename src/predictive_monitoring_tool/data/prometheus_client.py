@@ -156,7 +156,14 @@ def fetch_metrics(
     `is_anomaly`/`scenario`.
     """
     step_seconds = pd.Timedelta(step).total_seconds()
-    common_index = pd.date_range(start=start, end=end, freq=f"{step_seconds}s", tz="UTC")
+    # Prometheus's query_range aligns its returned timestamps to the
+    # integer-second `start`/`end` sent in the request params below — the
+    # index must be built from those same truncated seconds, not the raw
+    # (possibly sub-second) `start`/`end` datetimes, or `reindex()` below
+    # silently drops every point to NaN on a fractional-second mismatch.
+    aligned_start = pd.Timestamp(int(start.timestamp()), unit="s", tz="UTC")
+    aligned_end = pd.Timestamp(int(end.timestamp()), unit="s", tz="UTC")
+    common_index = pd.date_range(start=aligned_start, end=aligned_end, freq=f"{step_seconds}s")
 
     columns: dict[str, pd.Series] = {}
     for column in sorted(EXPECTED_COLUMNS):

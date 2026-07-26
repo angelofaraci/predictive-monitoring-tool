@@ -78,6 +78,24 @@ class TestFetchMetricsColumnContract:
         assert df["latency_ms"].isna().all()
         assert df["requests_per_sec"].isna().all()
 
+    def test_subsecond_start_and_end_do_not_misalign_the_index(self, fake_prometheus):
+        """Regression: `start`/`end` with microseconds (e.g. `datetime.now()`)
+        must not desync the DataFrame's index from the integer-second
+        timestamps Prometheus actually returns, or every value reindexes
+        to NaN despite a non-empty query result."""
+        sub_second_start = START.replace(microsecond=123456)
+        sub_second_end = END.replace(microsecond=654321)
+        values = [(1704067200, "42.0"), (1704067215, "43.0"), (1704067230, "44.0")]
+        fake_prometheus.set("/api/v1/query_range", (200, _matrix_response(values)))
+
+        queries = {"cpu_pct": "cpu_query"}
+        df = prometheus_client.fetch_metrics(
+            fake_prometheus.base_url, queries, sub_second_start, sub_second_end, step="15s"
+        )
+
+        assert not df["cpu_pct"].isna().all()
+        assert df["cpu_pct"].dropna().tolist() == [42.0, 43.0, 44.0]
+
     def test_optional_metric_missing_series_yields_nan_column_not_failure(
         self, fake_prometheus
     ):

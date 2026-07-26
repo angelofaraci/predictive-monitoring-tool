@@ -62,9 +62,13 @@ def test_connection_check_and_fetch_metrics_against_real_prometheus():
                 )
                 with prometheus:
                     wait_for_logs(prometheus, "Server is ready to receive web requests", timeout=30)
-                    # Give Prometheus a couple of scrape intervals to pull
-                    # from node_exporter before asserting on target health.
-                    time.sleep(6)
+                    # `cpu_pct`'s query uses `rate(...[5m])`, which needs at
+                    # least 2 scrape samples to produce a value — unlike the
+                    # gauge-based memory_pct/disk_pct, which are valid after
+                    # a single scrape. At `scrape_interval: 2s`, wait long
+                    # enough for several scrapes so the rate() query is not
+                    # flaky on slower CI runners.
+                    time.sleep(15)
 
                     host = prometheus.get_container_host_ip()
                     port = prometheus.get_exposed_port(9090)
