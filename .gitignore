@@ -25,3 +25,5 @@ models/*.metadata.json
 
 # Prometheus connection config (Phase 1.6) — holds a user-specific URL; not committed.
 config/prometheus.json
+
+docs/local/
