@@ -15,12 +15,17 @@ import threading
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from urllib.parse import parse_qs, urlparse
 
+import numpy as np
 import pytest
+from fastapi.testclient import TestClient
 
 from predictive_monitoring_tool.models.datasets import (
     build_evaluation_dataset,
     build_training_dataset,
+    feature_matrix,
 )
+from predictive_monitoring_tool.models.evaluate import evaluate, measure_predict_latency
+from predictive_monitoring_tool.models.persistence import save_model
 from predictive_monitoring_tool.models.train import TrainingResult, train_model
 
 
@@ -40,6 +45,51 @@ def evaluation_dataset():
 def trained_model(training_dataset) -> TrainingResult:
     """`IsolationForest` fitted on `training_dataset` at pinned hyperparameters."""
     return train_model(training_dataset)
+
+
+@pytest.fixture(scope="session")
+def api_model_dir(tmp_path_factory, training_dataset, evaluation_dataset, trained_model):
+    """Persist `trained_model` + calibrated threshold once, for the API tests.
+
+    Session-scoped so every API test module (`test_predict.py`,
+    `test_ingest.py`, `test_alerts.py`) reuses the same on-disk artifact
+    instead of retraining/re-evaluating per test.
+    """
+    directory = tmp_path_factory.mktemp("api_model")
+    metrics, threshold_info = evaluate(trained_model, training_dataset, evaluation_dataset)
+    metrics_json = {
+        name: {
+            "precision": m.precision,
+            "recall": m.recall,
+            "f1": m.f1,
+            "roc_auc": m.roc_auc,
+            "confusion": m.confusion,
+        }
+        for name, m in metrics.items()
+    }
+    threshold_json = {"value": threshold_info.value, "criterion": threshold_info.criterion}
+
+    columns = trained_model.feature_columns
+    row = np.ascontiguousarray(
+        feature_matrix(evaluation_dataset.iloc[:1], columns), dtype="float64"
+    )
+    latency = measure_predict_latency(trained_model.model, row)
+
+    save_model(trained_model, metrics_json, latency, directory=directory, threshold=threshold_json)
+    return directory
+
+
+@pytest.fixture()
+def client(api_model_dir, tmp_path, monkeypatch):
+    """`TestClient` wired to an isolated model dir + SQLite file per test."""
+    from predictive_monitoring_tool.api import storage
+    from predictive_monitoring_tool.api.main import app
+
+    monkeypatch.setenv("MODEL_PATH", str(api_model_dir))
+    monkeypatch.setattr(storage, "DB_PATH", tmp_path / "alerts.db")
+
+    with TestClient(app) as test_client:
+        yield test_client
 
 
 class _FakePrometheusRouteTable:

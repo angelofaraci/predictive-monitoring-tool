@@ -167,6 +167,59 @@ tags with the commit SHA, pushes, and deploys on every push to `main`. See
 [`docs/fase-2.5-walking-skeleton.md`](docs/fase-2.5-walking-skeleton.md) for
 the architecture, the manual OIDC setup steps, and how to trigger a deploy.
 
+Phase 4 adds three endpoints on top of `/health`: `POST /predict`
+(stateless inference), `POST /ingest` (runs the full pipeline and persists
+detected anomalies), and `GET /alerts` (alert history). The model is loaded
+once at startup from the directory pointed at by the `MODEL_PATH` env
+variable (falls back to `models/` when unset). See
+[`docs/fase-4-api.md`](docs/fase-4-api.md) for the full contract.
+
+### `POST /predict`
+
+Stateless inference over a raw window of readings (at least the longest
+configured rolling window, 15 minutes, of history). Returns `422` with a
+clear message if there isn't enough history — never a silent `NaN`.
+
+```bash
+curl -X POST http://localhost:8000/predict \
+  -H "Content-Type: application/json" \
+  -d '{
+    "readings": [
+      {"timestamp": "2024-01-01T00:00:00Z", "cpu_pct": 35.1, "memory_pct": 50.2, "disk_pct": 55.0, "latency_ms": 80.4, "requests_per_sec": 118.7},
+      {"timestamp": "2024-01-01T00:01:00Z", "cpu_pct": 36.0, "memory_pct": 50.5, "disk_pct": 55.1, "latency_ms": 79.9, "requests_per_sec": 121.3}
+    ]
+  }'
+# {"is_anomaly": false, "anomaly_score": -0.0421, "features": {...}}
+```
+
+### `POST /ingest`
+
+Runs the full pipeline from a data source. `mode: "demo"` uses the
+synthetic generator (optionally with an injected `scenario`, e.g.
+`memory_leak`, `cpu_spike`, `disk_fill`, `service_down`); any other `mode`
+(or omitting it) is real mode, which returns `501` — Prometheus connection
+(Phase 1.6) isn't implemented yet. Persists an alert to SQLite only when an
+anomaly is detected.
+
+```bash
+curl -X POST http://localhost:8000/ingest \
+  -H "Content-Type: application/json" \
+  -d '{"mode": "demo", "scenario": "memory_leak"}'
+# {"is_anomaly": true, "anomaly_score": 0.183, "persisted": true}
+
+curl -X POST http://localhost:8000/ingest -H "Content-Type: application/json" -d '{}'
+# 501 {"detail": "real mode not available yet — Prometheus connection (Phase 1.6) not implemented"}
+```
+
+### `GET /alerts`
+
+Persisted alerts, most recent first, with a configurable limit (default 50).
+
+```bash
+curl "http://localhost:8000/alerts?limit=10"
+# [{"id": 1, "timestamp": "...", "source": "demo", "scenario": "memory_leak", "is_anomaly": true, "anomaly_score": 0.183}]
+```
+
 ## Tests / Pruebas
 
 ```bash
