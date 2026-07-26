@@ -220,6 +220,34 @@ curl "http://localhost:8000/alerts?limit=10"
 # [{"id": 1, "timestamp": "...", "source": "demo", "scenario": "memory_leak", "is_anomaly": true, "anomaly_score": 0.183}]
 ```
 
+## MCP server / Servidor MCP
+
+Phase 5 exposes the same capabilities as an MCP server, over stdio, for
+an agent (Phase 6) to call directly — no running FastAPI instance
+needed, everything is in-process. It loads the trained model once, from
+the same `MODEL_PATH` env variable the API uses, and registers 4 tools:
+`get_alert_history`, `diagnose`, `restart_container`, and
+`free_disk_space`. The last two never execute anything — they return an
+`ActionProposal` (`requires_confirmation=True`, `executed=False`) that a
+human must confirm. See
+[`docs/fase-5-mcp.md`](docs/fase-5-mcp.md) for the full tool contracts.
+
+La fase 5 expone las mismas capacidades como servidor MCP, sobre stdio,
+para que un agente (fase 6) las use directamente — sin necesitar la API
+FastAPI corriendo, todo in-process.
+
+```bash
+uv run pmt-mcp
+```
+
+Any MCP-compatible client (Claude Desktop, an `mcp` SDK client, etc.)
+can connect to it over stdio. To point it at a trained model somewhere
+other than `models/`:
+
+```bash
+MODEL_PATH=/path/to/model uv run pmt-mcp
+```
+
 ## Tests / Pruebas
 
 ```bash

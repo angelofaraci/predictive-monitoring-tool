@@ -26,6 +26,9 @@ notebooks = [
     "nbconvert>=7.16",
 ]
 
+[project.scripts]
+pmt-mcp = "predictive_monitoring_tool.mcp_server.__main__:main"
+
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
