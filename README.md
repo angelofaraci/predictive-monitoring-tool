@@ -9,18 +9,7 @@ detection service, diagnosis agent, deployment) build on top of this
 foundation; see [`docs/spec.md`](docs/spec.md) for the full product spec
 and roadmap.
 
----
-
-predictive-monitoring-tool es un sistema de AIOps predictivo: genera métricas sintéticas de
-sistema, aprende cómo es el comportamiento "normal" y, en fases futuras,
-diagnostica anomalías mediante un agente. Este repositorio implementa por
-ahora la **Fase 1** del proyecto — el scaffold del repo y un generador
-determinista de métricas sintéticas. Las fases siguientes (pipeline de
-features, servicio de detección de anomalías, agente de diagnóstico,
-despliegue) se construyen sobre esta base; ver
-[`docs/spec.md`](docs/spec.md) para el spec completo y el roadmap.
-
-## Install / Instalación
+## Install
 
 predictive-monitoring-tool uses [`uv`](https://docs.astral.sh/uv/) for dependency management.
 
@@ -37,7 +26,7 @@ run `notebooks/`, not part of the core library):
 uv sync --group notebooks
 ```
 
-## Usage / Uso
+## Usage
 
 The public entry point is `predictive_monitoring_tool.data.generator.generate()`, which
 produces a deterministic `pandas.DataFrame` of 5 synthetic system metrics
@@ -79,7 +68,7 @@ generate(
 Registered anomaly scenarios (see `src/predictive_monitoring_tool/data/scenarios.py`):
 `memory_leak`, `cpu_spike`, `disk_fill`, `service_down`.
 
-## Connecting to a real Prometheus / Conectar a un Prometheus real
+## Connecting to a real Prometheus
 
 Phase 1.6 lets the tool pull metrics from your own Prometheus + node_exporter
 instead of the synthetic generator. There is no separate "wizard" script yet
@@ -126,7 +115,7 @@ Steps:
 PromQL queries (there's no standard node_exporter equivalent) — their
 absence never fails the connection check.
 
-## Feature engineering / Ingeniería de features
+## Feature engineering
 
 `predictive_monitoring_tool.data.features.build_features()` (Phase 2) turns
 `generate()`'s raw metrics into a model-ready `pandas.DataFrame` for the
@@ -156,7 +145,7 @@ from predictive_monitoring_tool.data.generator import generate
 df_features = build_features(generate(duration_minutes=180, seed=42))
 ```
 
-## Deploy / Despliegue
+## Deploy
 
 Phase 2.5 adds a minimal walking skeleton: Terraform (`infra/terraform/`)
 provisions an Azure Container Registry, a Container Apps environment, and a
@@ -220,7 +209,7 @@ curl "http://localhost:8000/alerts?limit=10"
 # [{"id": 1, "timestamp": "...", "source": "demo", "scenario": "memory_leak", "is_anomaly": true, "anomaly_score": 0.183}]
 ```
 
-## MCP server / Servidor MCP
+## MCP server
 
 Phase 5 exposes the same capabilities as an MCP server, over stdio, for
 an agent (Phase 6) to call directly — no running FastAPI instance
@@ -231,10 +220,6 @@ the same `MODEL_PATH` env variable the API uses, and registers 4 tools:
 `ActionProposal` (`requires_confirmation=True`, `executed=False`) that a
 human must confirm. See
 [`docs/fase-5-mcp.md`](docs/fase-5-mcp.md) for the full tool contracts.
-
-La fase 5 expone las mismas capacidades como servidor MCP, sobre stdio,
-para que un agente (fase 6) las use directamente — sin necesitar la API
-FastAPI corriendo, todo in-process.
 
 ```bash
 uv run pmt-mcp
@@ -248,7 +233,7 @@ other than `models/`:
 MODEL_PATH=/path/to/model uv run pmt-mcp
 ```
 
-## Tests / Pruebas
+## Tests
 
 ```bash
 uv run pytest
@@ -265,7 +250,7 @@ The default `uv run pytest` run excludes the opt-in Docker-backed test
 uv run pytest -m docker
 ```
 
-## Exploration Notebooks / Notebooks de exploración
+## Exploration Notebooks
 
 `notebooks/01_exploracion_datos_sinteticos.ipynb` plots normal mode plus
 each of the 4 anomaly scenarios for visual inspection.
