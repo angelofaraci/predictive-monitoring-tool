@@ -1,0 +1,29 @@
+{% extends "base.html" %}
+{% block title %} — Alert #{{ alert.id }}{% endblock %}
+{% block content %}
+<h1>Alert #{{ alert.id }}</h1>
+<dl>
+  <dt>Timestamp</dt><dd>{{ alert.timestamp }}</dd>
+  <dt>Source</dt><dd>{{ alert.source }}</dd>
+  <dt>Scenario</dt><dd>{{ alert.scenario or "—" }}</dd>
+  <dt>Anomaly score</dt><dd>{{ "%.3f"|format(alert.anomaly_score) }}</dd>
+</dl>
+
+<section class="diagnosis">
+  <h2>Diagnosis</h2>
+  {% if alert.diagnosis %}
+  <p>{{ alert.diagnosis }}</p>
+  {% else %}
+  <p class="empty-state">No diagnosis recorded yet.</p>
+  {% endif %}
+</section>
+
+<section class="proposed-action">
+  <h2>Proposed action</h2>
+  <p class="empty-state">Action execution is not available in this phase.</p>
+  <button type="button" disabled>Confirm (coming soon)</button>
+  <button type="button" disabled>Reject (coming soon)</button>
+</section>
+
+<p><a href="/dashboard">Back to dashboard</a></p>
+{% endblock %}

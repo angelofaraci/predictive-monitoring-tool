@@ -1,0 +1,35 @@
+{% extends "base.html" %}
+{% block title %} — Dashboard{% endblock %}
+{% block content %}
+<h1>Dashboard</h1>
+
+<section class="chart">
+  <h2>Anomaly-score history</h2>
+  {% if sparkline.empty %}
+  <p class="empty-state">No alerts yet — anomaly-score history will appear here once data is ingested.</p>
+  {% else %}
+  <svg viewBox="{{ sparkline.view_box }}" class="sparkline" role="img" aria-label="anomaly-score history">
+    <polyline points="{{ sparkline.points }}" fill="none" stroke="currentColor" stroke-width="1"></polyline>
+  </svg>
+  {% endif %}
+</section>
+
+<section class="demo-actions">
+  <h2>Trigger a demo scenario</h2>
+  {% for scenario in scenarios %}
+  <button
+    type="button"
+    hx-post="/dashboard/demo/{{ scenario }}"
+    hx-target="#alert-list"
+    hx-swap="innerHTML"
+  >{{ scenario.replace('_', ' ') }}</button>
+  {% endfor %}
+</section>
+
+<section class="alerts">
+  <h2>Recent alerts</h2>
+  <div id="alert-list" hx-get="/dashboard/alerts" hx-trigger="load, every 5s" hx-swap="innerHTML">
+    {% include "partials/_alert_list.html" %}
+  </div>
+</section>
+{% endblock %}

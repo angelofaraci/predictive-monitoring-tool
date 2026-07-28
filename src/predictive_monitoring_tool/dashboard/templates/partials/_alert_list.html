@@ -1,0 +1,12 @@
+<ul class="alert-list">
+  {% if not alerts %}
+  <li class="empty-state">No alerts yet.</li>
+  {% endif %}
+  {% for alert in alerts %}
+  <li>
+    <a href="/dashboard/alerts/{{ alert.id }}">
+      #{{ alert.id }} — {{ alert.timestamp }} — {{ alert.source }}{% if alert.scenario %} ({{ alert.scenario }}){% endif %} — score {{ "%.3f"|format(alert.anomaly_score) }}
+    </a>
+  </li>
+  {% endfor %}
+</ul>

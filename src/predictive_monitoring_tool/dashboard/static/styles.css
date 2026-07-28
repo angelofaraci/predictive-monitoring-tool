@@ -1,0 +1,106 @@
+/* Minimal stylesheet for the predictive monitoring tool dashboard
+   (Phase 8). No build step, no CSS framework — hand-written, small
+   enough to review in full. */
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+  color: #1a1a1a;
+  background: #f7f7fa;
+}
+
+.app-header {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  padding: 0.75rem 1.5rem;
+  background: #16213e;
+  color: #fff;
+}
+
+.app-name {
+  color: #fff;
+  font-weight: 600;
+  text-decoration: none;
+}
+
+.app-nav a {
+  color: #cbd5f5;
+  margin-left: 1rem;
+  text-decoration: none;
+}
+
+.app-nav a:hover {
+  text-decoration: underline;
+}
+
+.mode-badge {
+  padding: 0.15rem 0.6rem;
+  border-radius: 999px;
+  font-size: 0.8rem;
+  font-weight: 600;
+}
+
+.mode-badge.mode-live {
+  background: #1f8a4c;
+}
+
+.mode-badge.mode-demo {
+  background: #b8860b;
+}
+
+main {
+  max-width: 960px;
+  margin: 0 auto;
+  padding: 1.5rem;
+}
+
+.check {
+  padding: 0.4rem 0.6rem;
+  margin: 0.25rem 0;
+  border-radius: 4px;
+}
+
+.check.ok {
+  background: #e3f7e9;
+}
+
+.check.failed {
+  background: #fbe4e4;
+}
+
+.check.skipped {
+  background: #f0f0f0;
+  color: #666;
+}
+
+.sparkline {
+  width: 100%;
+  max-width: 480px;
+  height: 120px;
+  color: #16213e;
+}
+
+.empty-state {
+  color: #666;
+  font-style: italic;
+}
+
+.alert-list {
+  list-style: none;
+  padding: 0;
+}
+
+.alert-list li {
+  padding: 0.4rem 0;
+  border-bottom: 1px solid #e0e0e0;
+}
+
+button[disabled] {
+  opacity: 0.5;
+  cursor: not-allowed;
+}

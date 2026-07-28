@@ -1,0 +1,46 @@
+{% extends "base.html" %}
+{% block title %} — Setup{% endblock %}
+{% block content %}
+<h1>Set up Prometheus connection</h1>
+<p>
+  Connect the predictive monitoring tool to your Prometheus + node_exporter
+  deployment, or continue with demo data instead.
+</p>
+
+<section class="setup-form">
+  <h2>Test connection</h2>
+  <p>Read-only — this does not save anything.</p>
+  <form hx-post="/setup/test" hx-target="#connection-result" hx-swap="innerHTML">
+    <label for="test-url">Prometheus URL</label>
+    <input
+      id="test-url"
+      name="url"
+      type="text"
+      value="{{ current_url or '' }}"
+      placeholder="http://localhost:9090"
+      required
+    >
+    <button type="submit">Test connection</button>
+  </form>
+  <div id="connection-result"></div>
+</section>
+
+<section class="setup-form">
+  <h2>Save configuration</h2>
+  <form hx-post="/setup/save" hx-target="#save-result" hx-swap="innerHTML">
+    <label for="save-url">Prometheus URL</label>
+    <input
+      id="save-url"
+      name="url"
+      type="text"
+      value="{{ current_url or '' }}"
+      placeholder="http://localhost:9090"
+      required
+    >
+    <button type="submit">Save</button>
+  </form>
+  <div id="save-result"></div>
+</section>
+
+<p><a href="/dashboard?demo=1">Use demo data instead</a></p>
+{% endblock %}

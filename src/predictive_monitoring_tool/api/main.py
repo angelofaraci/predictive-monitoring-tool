@@ -16,6 +16,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, Query
+from fastapi.staticfiles import StaticFiles
 
 from predictive_monitoring_tool.agent.service import answer_query
 from predictive_monitoring_tool.api import storage
@@ -38,6 +39,8 @@ from predictive_monitoring_tool.api.schemas import (
     PredictRequest,
     PredictResponse,
 )
+from predictive_monitoring_tool.dashboard.routes import STATIC_DIR
+from predictive_monitoring_tool.dashboard.routes import router as dashboard_router
 from predictive_monitoring_tool.data import prometheus_config
 from predictive_monitoring_tool.models import persistence
 from predictive_monitoring_tool.orchestration.scheduler import Scheduler
@@ -72,6 +75,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
 
 app = FastAPI(title="predictive-monitoring-tool", lifespan=lifespan)
+app.include_router(dashboard_router)
+app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 
 
 @app.get("/health")

@@ -1,0 +1,12 @@
+<div id="connection-result" class="connection-result {{ 'status-ok' if result.ok else 'status-failed' }}">
+  <p>Tested URL: {{ result.url }}</p>
+  <div class="check {{ 'ok' if result.reachable.ok else 'failed' }}">
+    <strong>Reachability:</strong> {{ result.reachable.message }}
+  </div>
+  <div class="check {{ 'ok' if result.targets.ok else ('skipped' if not result.reachable.ok else 'failed') }}">
+    <strong>Active targets:</strong> {{ result.targets.message }}
+  </div>
+  <div class="check {{ 'ok' if result.metrics.ok else ('skipped' if not result.targets.ok else 'failed') }}">
+    <strong>Metrics:</strong> {{ result.metrics.message }}
+  </div>
+</div>
