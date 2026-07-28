@@ -26,8 +26,11 @@ from predictive_monitoring_tool.data.features import build_features
 
 # Mirrors `data.features._DEFAULT_WINDOWS`'s longest entry (spec: Fase 3.5
 # section 3.3 — the API must require at least the longest configured
-# rolling window of history before features are valid).
+# rolling window of history before features are valid). Exposed publicly
+# as `MINIMUM_HISTORY_WINDOW` too — Phase 7's scheduler clamps its poll
+# interval to this same floor rather than duplicating the constant.
 _LONGEST_WINDOW = pd.Timedelta("15min")
+MINIMUM_HISTORY_WINDOW = _LONGEST_WINDOW
 
 
 class InsufficientHistoryError(ValueError):

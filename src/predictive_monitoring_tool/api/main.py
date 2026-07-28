@@ -20,6 +20,7 @@ from fastapi import FastAPI, HTTPException, Query
 from predictive_monitoring_tool.agent.service import answer_query
 from predictive_monitoring_tool.api import storage
 from predictive_monitoring_tool.api.ingestion import (
+    PrometheusUnavailableError,
     RealModeNotImplementedError,
     run_ingest,
 )
@@ -37,17 +38,37 @@ from predictive_monitoring_tool.api.schemas import (
     PredictRequest,
     PredictResponse,
 )
+from predictive_monitoring_tool.data import prometheus_config
 from predictive_monitoring_tool.models import persistence
+from predictive_monitoring_tool.orchestration.scheduler import Scheduler
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
-    """Load the model + metadata once at startup into `app.state`."""
+    """Load the model + metadata once at startup into `app.state`.
+
+    Also starts the Phase 7 real-mode polling `Scheduler` — but only when a
+    Prometheus connection is actually configured (`is_configured()`);
+    otherwise there is nothing to poll and the loop would just spin logging
+    "not configured" every cycle. Demo mode never starts a scheduler; it
+    stays triggered on demand from the UI (Phase 8). Known limitation: this
+    in-process loop stops if the Container App scales to zero — see README.
+    """
     directory = Path(os.environ.get("MODEL_PATH", str(persistence.MODEL_DIR)))
     model, metadata = persistence.load_model(directory)
     app.state.model = model
     app.state.metadata = metadata
+
+    scheduler: Scheduler | None = None
+    if prometheus_config.is_configured():
+        scheduler = Scheduler(model=model, metadata=metadata)
+        scheduler.start()
+    app.state.scheduler = scheduler
+
     yield
+
+    if scheduler is not None:
+        await scheduler.stop()
 
 
 app = FastAPI(title="predictive-monitoring-tool", lifespan=lifespan)
@@ -84,6 +105,8 @@ def ingest(request: IngestRequest) -> IngestResponse:
         )
     except RealModeNotImplementedError as exc:
         raise HTTPException(status_code=501, detail=str(exc)) from exc
+    except PrometheusUnavailableError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
     except InsufficientHistoryError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 

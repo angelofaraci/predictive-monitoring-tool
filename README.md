@@ -2,10 +2,10 @@
 
 predictive-monitoring-tool is a predictive AIOps system: it generates synthetic system metrics,
 learns what "normal" looks like, and eventually diagnoses anomalies through
-an agent-based workflow. This repository currently implements **Phases 1–6**
+an agent-based workflow. This repository currently implements **Phases 1–7**
 of the project — the repo scaffold, synthetic metrics generator, feature engineering,
-anomaly detection model, API service, MCP server for tooling, and agent-based
-diagnosis. See [`docs/spec.md`](docs/spec.md) for the full product spec
+anomaly detection model, API service, MCP server for tooling, agent-based diagnosis,
+and real-mode orchestration. See [`docs/spec.md`](docs/spec.md) for the full product spec
 and roadmap.
 
 ## Install
@@ -273,6 +273,49 @@ curl -X POST http://localhost:8000/agent/query \
 #   ]
 # }
 ```
+
+## Orchestration (real-mode polling)
+
+Phase 7 closes the loop in **real mode only**: an in-process `asyncio`
+task polls Prometheus on a configurable interval, ingests, and when a new
+anomaly alert is persisted, automatically runs the Phase 6 agent's
+`diagnose_alert(alert_id)` in the background — saving the resulting
+diagnosis (and optional proposal) onto the alert, with no manual
+intervention. Demo mode is unaffected: it stays triggered on demand from
+the UI (Phase 8). See [`docs/fase-7-orquestacion.md`](docs/fase-7-orquestacion.md)
+for the full design.
+
+- `POLL_INTERVAL_SECONDS` (default: the Phase 3.5 minimum history window,
+  15 minutes) — how often the loop wakes up and re-ingests. Any configured
+  value below that minimum is clamped up, never accepted as-is: polling
+  faster than the minimum history window can never produce a scoreable
+  feature window.
+- `ALERT_COOLDOWN_SECONDS` (default 900 = 15 min) — cooldown/dedup window.
+  If an anomaly of the same "type" (the metric that deviated most from its
+  own window mean in real mode) was already alerted within this window, no
+  new alert is created and the agent is not re-triggered — this is what
+  keeps a single persistent 20-minute memory leak from generating 20
+  identical alerts and 20 redundant (and separately billed) LLM
+  diagnoses.
+- Prometheus connection failures are logged and the loop simply continues
+  to the next cycle — they never crash the process.
+- The diagnosis always runs as an independent background `asyncio` task,
+  never awaited by the poll cycle itself, so a slow LLM call never delays
+  the next poll.
+- `proposal_id` on the `alerts` table is currently always `None`. Phase 5's
+  `ActionProposal` is transient and never persisted with an id, so there is
+  no id to reference yet — the full proposal text (if the agent made one)
+  lives in `diagnosis` instead. Wiring a real `proposal_id` needs an id'd
+  proposals table first, which is not part of this phase.
+
+**Known limitation — scale-to-zero.** This loop lives in-process with the
+API. If the Azure Container App scales to zero from lack of traffic, the
+loop stops with it, and monitoring is silently paused until some request
+wakes the container back up — there is no cron-like guarantee it keeps
+running while idle. The correct fix is migrating this loop to an **Azure
+Container Apps Job with a cron trigger**, fully decoupled from the API's
+own scaling. That migration is deferred to Phase 9 and is *not*
+implemented here.
 
 ## Tests
 

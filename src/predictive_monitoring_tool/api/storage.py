@@ -156,3 +156,25 @@ def list_alerts(*, limit: int = 50, db_path: Path | None = None) -> list[AlertRe
     return [_row_to_record(row) for row in rows]
 
 
+def save_diagnosis(
+    alert_id: int,
+    diagnosis: str,
+    proposal_id: int | None = None,
+    *,
+    db_path: Path | None = None,
+) -> None:
+    """Attach the Phase 6 agent's diagnosis (and optional proposal id) to
+    an already-persisted alert row (spec: fase-7-orquestacion.md §3.2).
+
+    Called by the Phase 7 scheduler once `diagnose_alert(alert_id)`
+    completes in the background — never blocks the polling loop itself.
+    """
+    resolved = _resolve(db_path)
+    init_db(resolved)
+    with sqlite3.connect(resolved) as conn:
+        conn.execute(
+            "UPDATE alerts SET diagnosis = ?, proposal_id = ? WHERE id = ?",
+            (diagnosis, proposal_id, alert_id),
+        )
+
+
