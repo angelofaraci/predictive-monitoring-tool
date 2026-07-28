@@ -2,11 +2,10 @@
 
 predictive-monitoring-tool is a predictive AIOps system: it generates synthetic system metrics,
 learns what "normal" looks like, and eventually diagnoses anomalies through
-an agent-based workflow. This repository currently implements **Phase 1**
-of the project — the repo scaffold and a deterministic synthetic
-system-metrics generator. Later phases (feature pipeline, anomaly
-detection service, diagnosis agent, deployment) build on top of this
-foundation; see [`docs/spec.md`](docs/spec.md) for the full product spec
+an agent-based workflow. This repository currently implements **Phases 1–6**
+of the project — the repo scaffold, synthetic metrics generator, feature engineering,
+anomaly detection model, API service, MCP server for tooling, and agent-based
+diagnosis. See [`docs/spec.md`](docs/spec.md) for the full product spec
 and roadmap.
 
 ## Install
@@ -231,6 +230,48 @@ other than `models/`:
 
 ```bash
 MODEL_PATH=/path/to/model uv run pmt-mcp
+```
+
+## Diagnosis agent
+
+Phase 6 adds a LangGraph-based diagnosis agent that connects to the Phase
+5 MCP server via `langchain-mcp-adapters`'s `MultiServerMCPClient` — no
+hand-rolled MCP client. The agent reasons over the 4 MCP tools
+(`get_alert_history`, `diagnose`, `restart_container`, `free_disk_space`)
+and can call the two action tools to *propose* a remediation, but its
+system prompt explicitly forbids ever claiming an action was executed:
+every action stays "a proposal pending human confirmation", and when
+there's no clear or safe remediation the agent just explains. See
+[`docs/fase-6-agente.md`](docs/fase-6-agente.md) for the full design.
+
+Two entry points:
+
+- `agent.service.diagnose_alert(alert_id)` — loads a persisted alert
+  (Phase 4) and runs the agent to produce an explanation and an optional
+  proposal. Phase 7's scheduler calls this function for every new alert.
+- `POST /agent/query` — free-text natural-language questions, for Phase
+  8's interactive chat.
+
+The LLM model is a config variable (`AGENT_LLM_MODEL` env var, default
+`openai:gpt-4o-mini`; e.g. `anthropic:claude-3-5-haiku-latest` also
+works), never hardcoded, with a configurable timeout
+(`AGENT_LLM_TIMEOUT_SECONDS`, default 30s). Each query is independent —
+no conversation memory across turns in this MVP.
+
+```bash
+curl -X POST http://localhost:8000/agent/query \
+  -H "Content-Type: application/json" \
+  -d '{"question": "What happened at 3am?"}'
+# {
+#   "answer": "The last persisted alert (id 42, 2024-01-01T03:02:00Z) was a \
+# memory_leak scenario with anomaly_score=0.91 — memory_pct climbed steadily \
+# over the window. I propose restarting container 'web-1', pending human \
+# confirmation.",
+#   "proposals": [
+#     {"action": "restart_container", "parameters": {"container_id": "web-1"},
+#      "requires_confirmation": true, "executed": false}
+#   ]
+# }
 ```
 
 ## Tests

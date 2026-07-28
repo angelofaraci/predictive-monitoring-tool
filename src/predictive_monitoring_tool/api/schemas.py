@@ -8,6 +8,7 @@ either real Prometheus samples or `generate()`'s own output unchanged.
 from __future__ import annotations
 
 from datetime import datetime
+from typing import Any
 
 from pydantic import BaseModel
 
@@ -61,3 +62,21 @@ class AlertOut(BaseModel):
     scenario: str | None
     is_anomaly: bool
     anomaly_score: float
+
+
+class AgentQueryRequest(BaseModel):
+    """Body for `POST /agent/query` (spec: fase-6-agente.md, Entry points)."""
+
+    question: str
+
+
+class AgentQueryResponse(BaseModel):
+    """Response for `POST /agent/query`.
+
+    `proposals` mirrors any `ActionProposal`(s) (spec: fase-5-mcp.md) the
+    agent called while answering — always empty when it proposed nothing,
+    which is a valid outcome, not an error.
+    """
+
+    answer: str
+    proposals: list[dict[str, Any]]

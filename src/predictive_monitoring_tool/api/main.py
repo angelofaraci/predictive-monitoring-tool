@@ -17,6 +17,7 @@ from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, Query
 
+from predictive_monitoring_tool.agent.service import answer_query
 from predictive_monitoring_tool.api import storage
 from predictive_monitoring_tool.api.ingestion import (
     RealModeNotImplementedError,
@@ -28,6 +29,8 @@ from predictive_monitoring_tool.api.inference import (
     readings_to_frame,
 )
 from predictive_monitoring_tool.api.schemas import (
+    AgentQueryRequest,
+    AgentQueryResponse,
     AlertOut,
     IngestRequest,
     IngestResponse,
@@ -106,3 +109,23 @@ def alerts(limit: int = Query(default=50, gt=0)) -> list[AlertOut]:
         )
         for r in records
     ]
+
+
+@app.post("/agent/query", response_model=AgentQueryResponse)
+async def agent_query(request: AgentQueryRequest) -> AgentQueryResponse:
+    """Answer a free-text question with the diagnosis agent (spec: fase-6-agente.md).
+
+    Delegates to `agent.service.answer_query()`, which connects to the
+    Phase 5 MCP server via `MultiServerMCPClient` and runs the LangGraph
+    agent over the read-only tools. `502` surfaces any failure to reach
+    the MCP server or the configured LLM provider — never a silent empty
+    answer.
+    """
+    try:
+        result = await answer_query(request.question)
+    except Exception as exc:  # noqa: BLE001 - surfaced as a clear 502, not a 500 traceback
+        raise HTTPException(
+            status_code=502, detail=f"agent could not answer the query: {exc}"
+        ) from exc
+
+    return AgentQueryResponse(answer=result.answer, proposals=result.proposals)
