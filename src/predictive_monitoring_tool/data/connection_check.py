@@ -28,24 +28,23 @@ _STATUS_CONFIG_PATH = "/api/v1/status/config"
 _TARGETS_PATH = "/api/v1/targets"
 
 MESSAGES: dict[str, str] = {
-    "reachable_ok": "Conectado a Prometheus correctamente.",
+    "reachable_ok": "Connected to Prometheus successfully.",
     "reachable_failed": (
-        "No pudimos conectar a esa URL. ¿Prometheus está corriendo y es "
-        "accesible desde donde corre esta app?"
+        "We couldn't connect to that URL. Is Prometheus running and "
+        "reachable from where this app is running?"
     ),
-    "targets_ok": "Encontramos al menos un target de node_exporter activo.",
+    "targets_ok": "Found at least one active node_exporter target.",
     "targets_failed": (
-        "Nos conectamos a Prometheus, pero no encontramos ningún target de "
-        "node_exporter activo. ¿Está corriendo y agregado a la config de "
-        "Prometheus?"
+        "Connected to Prometheus, but found no active node_exporter "
+        "target. Is it running and added to the Prometheus config?"
     ),
-    "targets_skipped": "No se verificaron los targets porque la conexión falló antes.",
-    "metrics_ok": "Encontramos todas las métricas core necesarias.",
+    "targets_skipped": "Targets were not checked because the connection failed earlier.",
+    "metrics_ok": "Found all the required core metrics.",
     "metrics_failed": (
-        "Conectado, pero no encontramos {missing}. ¿Tu versión de "
-        "node_exporter la expone con ese nombre?"
+        "Connected, but couldn't find {missing}. Does your node_exporter "
+        "version expose it under that name?"
     ),
-    "metrics_skipped": "No se verificaron las métricas porque un paso anterior falló.",
+    "metrics_skipped": "Metrics were not checked because an earlier step failed.",
 }
 
 

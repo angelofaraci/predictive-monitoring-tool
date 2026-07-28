@@ -71,7 +71,7 @@ class TestLevel1Reachability:
 
         assert result.reachable.ok is False
         assert result.status == "failed"
-        assert "conectar" in result.reachable.message.lower()
+        assert "connect" in result.reachable.message.lower()
 
     def test_level1_failure_does_not_raise(self):
         url = _closed_port_url()
