@@ -276,14 +276,24 @@ curl -X POST http://localhost:8000/agent/query \
 
 ## Orchestration (real-mode polling)
 
-Phase 7 closes the loop in **real mode only**: an in-process `asyncio`
-task polls Prometheus on a configurable interval, ingests, and when a new
-anomaly alert is persisted, automatically runs the Phase 6 agent's
-`diagnose_alert(alert_id)` in the background — saving the resulting
-diagnosis (and optional proposal) onto the alert, with no manual
-intervention. Demo mode is unaffected: it stays triggered on demand from
-the UI (Phase 8). See [`docs/fase-7-orquestacion.md`](docs/fase-7-orquestacion.md)
-for the full design.
+Phase 7 closes the loop in **real mode only**: on a configurable interval,
+Prometheus is polled, ingested, and when a new anomaly alert is persisted,
+the Phase 6 agent's `diagnose_alert(alert_id)` runs automatically in the
+background — saving the resulting diagnosis (and optional proposal) onto
+the alert, with no manual intervention. Demo mode is unaffected: it stays
+triggered on demand from the UI (Phase 8). See
+[`docs/fase-7-orquestacion.md`](docs/fase-7-orquestacion.md) for the full
+polling/cooldown/diagnosis design.
+
+**Phase 9 update:** this polling no longer runs in-process with the API.
+It now runs exclusively as an **Azure Container Apps Job** on a cron
+trigger (`orchestration/job.py`, deployed via `infra/terraform/scheduler_job.tf`),
+fully decoupled from the API's own scaling — see "Known limitation"
+below for why the original in-process design needed this. `api/main.py`'s
+`lifespan()` no longer starts, stops, or references any scheduler; it only
+loads the model. Cooldown/dedup state lives in the shared SQLite db (see
+`alert_cooldowns` in `api/storage.py`), so suppression survives across the
+Job's separate one-shot executions instead of resetting on every tick.
 
 - `POLL_INTERVAL_SECONDS` (default: the Phase 3.5 minimum history window,
   15 minutes) — how often the loop wakes up and re-ingests. Any configured
@@ -308,14 +318,38 @@ for the full design.
   lives in `diagnosis` instead. Wiring a real `proposal_id` needs an id'd
   proposals table first, which is not part of this phase.
 
-**Known limitation — scale-to-zero.** This loop lives in-process with the
-API. If the Azure Container App scales to zero from lack of traffic, the
-loop stops with it, and monitoring is silently paused until some request
-wakes the container back up — there is no cron-like guarantee it keeps
-running while idle. The correct fix is migrating this loop to an **Azure
-Container Apps Job with a cron trigger**, fully decoupled from the API's
-own scaling. That migration is deferred to Phase 9 and is *not*
-implemented here.
+**Known limitation — scale-to-zero (RESOLVED in Phase 9).** The original
+Phase 7 design ran this loop in-process with the API: if the Azure
+Container App scaled to zero from lack of traffic, the loop stopped with
+it, and monitoring was silently paused until some request woke the
+container back up — there was no cron-like guarantee it kept running while
+idle. Phase 9 fixed this by migrating polling to an Azure Container Apps
+Job with a cron trigger (`*/15 * * * *` by default,
+`var.poll_cron_expression`), fully decoupled from the API's own scaling —
+the Job runs on its own schedule regardless of API traffic or replica
+count.
+
+## Observability (`/metrics`)
+
+The API exposes `GET /metrics` (via `prometheus-fastapi-instrumentator`)
+in Prometheus exposition format: request count, per-endpoint latency
+histograms, and error rate, broken down by handler/method/status. An
+internal-only Prometheus scrapes it every 30s, and an internal-only
+Grafana renders the `app-health` dashboard from it (Phase 9, Work Unit 6)
+— neither monitoring app is reachable from the public internet.
+
+**Phase 10 TODO — `/metrics` public exposure.** Azure Container Apps has
+no per-app internal/external ingress split: a single Container App is
+either fully public or fully internal. Since the API's `/health`,
+`/predict`, `/agent/query`, etc. must stay publicly reachable, `/metrics`
+unavoidably inherits that same public ingress in this phase — accepted as
+a deliberate Phase 9 tradeoff, not an oversight. Phase 10 must add
+authentication or IP-restriction in front of `/metrics` specifically
+(e.g. a reverse-proxy sidecar, Container Apps' IP restriction rules
+scoped to a dedicated route, or splitting `/metrics` onto its own
+internal-only Container App with a private scrape path). Track this in
+the same Phase 10 bucket as the custom-domain/managed-certificate item
+noted for the CI/OIDC-narrowing work unit (Work Unit 7).
 
 ## Tests
 

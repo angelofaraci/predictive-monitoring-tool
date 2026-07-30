@@ -17,6 +17,7 @@ from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.staticfiles import StaticFiles
+from prometheus_fastapi_instrumentator import Instrumentator
 
 from predictive_monitoring_tool.agent.service import answer_query
 from predictive_monitoring_tool.api import storage
@@ -41,42 +42,37 @@ from predictive_monitoring_tool.api.schemas import (
 )
 from predictive_monitoring_tool.dashboard.routes import STATIC_DIR
 from predictive_monitoring_tool.dashboard.routes import router as dashboard_router
-from predictive_monitoring_tool.data import prometheus_config
 from predictive_monitoring_tool.models import persistence
-from predictive_monitoring_tool.orchestration.scheduler import Scheduler
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     """Load the model + metadata once at startup into `app.state`.
 
-    Also starts the Phase 7 real-mode polling `Scheduler` — but only when a
-    Prometheus connection is actually configured (`is_configured()`);
-    otherwise there is nothing to poll and the loop would just spin logging
-    "not configured" every cycle. Demo mode never starts a scheduler; it
-    stays triggered on demand from the UI (Phase 8). Known limitation: this
-    in-process loop stops if the Container App scales to zero — see README.
+    Phase 9: no longer owns any polling scheduler. Real-mode polling now
+    runs exclusively via a Container Apps Job on a cron trigger
+    (`orchestration/job.py`, deployed in Work Unit 4), decoupled from this
+    API's own scaling — see README's "Orchestration" section. Demo mode is
+    unaffected: it stays triggered on demand from the UI (Phase 8).
     """
     directory = Path(os.environ.get("MODEL_PATH", str(persistence.MODEL_DIR)))
     model, metadata = persistence.load_model(directory)
     app.state.model = model
     app.state.metadata = metadata
 
-    scheduler: Scheduler | None = None
-    if prometheus_config.is_configured():
-        scheduler = Scheduler(model=model, metadata=metadata)
-        scheduler.start()
-    app.state.scheduler = scheduler
-
     yield
-
-    if scheduler is not None:
-        await scheduler.stop()
 
 
 app = FastAPI(title="predictive-monitoring-tool", lifespan=lifespan)
 app.include_router(dashboard_router)
 app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
+
+# Phase 9: `/metrics` in Prometheus exposition format (request count,
+# per-endpoint latency, error rate — the library's defaults cover the
+# spec's `service-observability` acceptance criteria). Note: `/metrics`
+# inherits this API's existing public ingress — Container Apps has no
+# per-app internal/external ingress split (see README's Phase 10 TODO).
+Instrumentator().instrument(app).expose(app)
 
 
 @app.get("/health")

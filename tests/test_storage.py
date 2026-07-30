@@ -11,6 +11,8 @@ journal, `busy_timeout`), and the `alert_cooldowns` persistence functions
 from __future__ import annotations
 
 import importlib
+import multiprocessing
+from concurrent.futures import ProcessPoolExecutor
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -125,3 +127,60 @@ class TestCooldownPersistence:
         assert deleted == 1
         assert storage.get_cooldown_expiry("expired_type", db_path=db_path) is None
         assert storage.get_cooldown_expiry("active_type", db_path=db_path) is not None
+
+
+# Module-level (not nested) so `ProcessPoolExecutor` can pickle-by-reference
+# and run each in its own process — genuine concurrent writers on one file,
+# not just concurrent threads sharing a GIL/connection pool.
+def _write_many_alerts(db_path_str: str, count: int) -> list[int]:
+    db_path = Path(db_path_str)
+    return [
+        storage.insert_alert(
+            timestamp=f"2025-01-01T00:00:{i:02d}+00:00",
+            source="prometheus",
+            scenario="cpu_pct",
+            is_anomaly=True,
+            anomaly_score=0.9,
+            db_path=db_path,
+        )
+        for i in range(count)
+    ]
+
+
+def _write_many_cooldowns(db_path_str: str, count: int) -> None:
+    db_path = Path(db_path_str)
+    for i in range(count):
+        storage.set_cooldown(
+            f"type_{i}", datetime.now(UTC) + timedelta(minutes=15), db_path=db_path
+        )
+
+
+class TestConcurrentWriters:
+    """spec/design ADR #2 (Phase 9): production has exactly two writers on
+    one Azure-Files-backed db file — the API and the polling Job.
+    `_connect()`'s `busy_timeout` (never WAL) must make the losing side of
+    a write collision retry internally instead of raising `SQLITE_BUSY`,
+    and no row from either writer may be lost."""
+
+    def test_concurrent_alert_and_cooldown_writers_lose_no_rows(self, tmp_path):
+        db_path = tmp_path / "alerts.db"
+        storage.init_db(db_path)
+        writes_per_worker = 25
+
+        ctx = multiprocessing.get_context("fork")
+        with ProcessPoolExecutor(max_workers=2, mp_context=ctx) as executor:
+            alerts_future = executor.submit(_write_many_alerts, str(db_path), writes_per_worker)
+            cooldowns_future = executor.submit(
+                _write_many_cooldowns, str(db_path), writes_per_worker
+            )
+            alert_ids = alerts_future.result(timeout=60)
+            cooldowns_future.result(timeout=60)  # raises if the worker process raised
+
+        assert len(alert_ids) == writes_per_worker
+        assert len(set(alert_ids)) == writes_per_worker  # every row got a distinct id
+
+        persisted = storage.list_alerts(limit=writes_per_worker + 5, db_path=db_path)
+        assert len(persisted) == writes_per_worker  # no alert lost to a collision
+
+        for i in range(writes_per_worker):
+            assert storage.get_cooldown_expiry(f"type_{i}", db_path=db_path) is not None
