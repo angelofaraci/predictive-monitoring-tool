@@ -309,11 +309,10 @@ resources at that time — not preemptively now.
       environment)
 - [x] No credential appears as a literal value in `.tf`, workflow, or
       container env — all via Key Vault reference
-- [ ] `deploy.yml` succeeds end-to-end with the narrowed OIDC role, and
-      `Contributor`-on-RG is gone from `.tf` — **role removed from
-      Terraform in this work unit; the maintainer runs the real
-      `terraform apply` + triggers a real CI run to confirm end-to-end**
-      (see risk note below)
+- [x] `deploy.yml` succeeds end-to-end with the narrowed OIDC role, and
+      `Contributor`-on-RG is gone from `.tf` — applied live
+      (`terraform apply`: 3 added, 1 destroyed) and confirmed with a real
+      CI `Deploy` run that succeeded under the narrowed role alone
 - [x] `terraform plan` is a no-op from a clean clone using the remote
       backend, with locking demonstrably active
 - [x] Polling runs on the cron Job; API process no longer starts a

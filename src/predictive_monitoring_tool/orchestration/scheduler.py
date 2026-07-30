@@ -20,11 +20,11 @@ Spec: fase-7-orquestacion.md. One `Scheduler` instance owns:
   never awaited from `run_once()`, so a slow/hanging LLM call never delays
   the next poll cycle.
 
-Known limitation (documented in README per spec §2): this loop lives
-in-process with the API. If the Azure Container App scales to zero from no
-traffic, the loop stops with it and only resumes once a request wakes the
-container back up. The correct fix — an Azure Container Apps Job with a
-cron trigger, decoupled from API scaling — is deferred to Phase 9.
+Phase 9: the in-process polling loop (`start()`/`_loop()`, which used to
+run inside the API's own event loop and stopped whenever the Container App
+scaled to zero) has been removed. `orchestration/job.py`'s Container Apps
+Job now drives every poll cycle instead, via `run_once()` on a cron
+schedule decoupled from API traffic/scaling.
 """
 
 from __future__ import annotations
@@ -108,36 +108,19 @@ class Scheduler:
         # in-memory `self._cooldowns` dict anymore; this instance holds no
         # cooldown state of its own, so a fresh instance against the same db
         # file (e.g. after a process restart) still honours an active cooldown.
-        self._loop_task: asyncio.Task[None] | None = None
         self._background_tasks: set[asyncio.Task[None]] = set()
 
-    @property
-    def running(self) -> bool:
-        return self._loop_task is not None and not self._loop_task.done()
-
-    def start(self) -> None:
-        """Start the polling loop as a background `asyncio` task. Idempotent."""
-        if self.running:
-            return
-        self._loop_task = asyncio.create_task(self._loop())
-
     async def stop(self) -> None:
-        """Cancel the polling loop and wait for any in-flight diagnosis tasks."""
-        if self._loop_task is not None:
-            self._loop_task.cancel()
-            try:
-                await self._loop_task
-            except asyncio.CancelledError:
-                pass
-            self._loop_task = None
+        """Wait for any in-flight background diagnosis tasks to finish.
 
+        Called by `orchestration/job.py` after `run_once()` so a one-shot
+        Job invocation doesn't exit mid-LLM-call. The in-process polling
+        loop this used to also cancel (`start()`/`_loop()`) was removed in
+        Phase 9 once the Container Apps Job replaced it as the sole poll
+        driver — see the class docstring.
+        """
         if self._background_tasks:
             await asyncio.gather(*self._background_tasks, return_exceptions=True)
-
-    async def _loop(self) -> None:
-        while True:
-            await self.run_once()
-            await asyncio.sleep(self.poll_interval_seconds)
 
     async def run_once(self) -> None:
         """One poll cycle: fetch+score (off the event loop thread), apply
