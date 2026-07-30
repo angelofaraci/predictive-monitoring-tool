@@ -13,12 +13,18 @@
 # bind-mount equivalent to a docker-compose volume, so this is the
 # simplest way to get Prometheus's scrape config and Grafana's
 # datasource/dashboard provisioning into the running container without any
-# runtime script. Both images are built and pushed by hand to the same
-# ACR the main app uses (see README's "Monitoring image build" section for
-# the exact commands) — CI wiring for these two images is a Work Unit 7
-# follow-up, not yet in place, matching the existing `var.container_image`
-# pattern where a public default lets a standalone `terraform apply`
-# succeed before any custom image has been built.
+# runtime script. `.github/workflows/deploy.yml` builds and pushes both
+# images to the same ACR the main app uses on every push to `main` (Work
+# Unit 7), but that alone does not redeploy these two Container Apps —
+# CI is deliberately not granted `containerapp update`/`show` on them
+# (see `ci_identity.tf` and README's "CI least privilege" section), and
+# `lifecycle.ignore_changes` below means a plain `terraform apply` won't
+# pick up a new tag either. Rolling out a changed image still needs the
+# manual `terraform apply -var "prometheus_image=..." -var
+# "grafana_image=..."` step documented in README's "Monitoring image
+# build" section, matching the existing `var.container_image` pattern
+# where a public default lets a standalone `terraform apply` succeed
+# before any custom image has been built.
 
 resource "azurerm_container_app" "prometheus" {
   # Container App names are capped at 32 characters (same constraint noted

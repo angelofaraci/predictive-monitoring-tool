@@ -207,10 +207,6 @@ resource "null_resource" "sync_github_client_id_secret" {
   }
 }
 
-# The federated identity only needs to manage resources within this
-# Resource Group in order to run `az containerapp update`.
-resource "azurerm_role_assignment" "github_actions_contributor" {
-  scope                = azurerm_resource_group.main.id
-  role_definition_name = "Contributor"
-  principal_id         = azuread_service_principal.github_actions.object_id
-}
+# CI/OIDC role assignments (AcrPush on the ACR, Container Apps Contributor
+# on this one Container App) live in ci_identity.tf (Phase 9, Work Unit 7)
+# — replaces the original RG-wide Contributor grant that used to live here.

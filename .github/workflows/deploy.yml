@@ -9,6 +9,14 @@ env:
   RESOURCE_GROUP: predictive-monitoring-tool-rg
   CONTAINER_APP_NAME: predictive-monitoring-tool-app
   IMAGE_NAME: predictive-monitoring-tool
+  # Phase 9 Work Unit 7: repo variable, not a secret — the ACR login server
+  # isn't sensitive. Set once via
+  # `gh variable set ACR_LOGIN_SERVER --body "$(terraform -chdir=infra/terraform output -raw acr_login_server)"`
+  # (kept in sync automatically thereafter by
+  # infra/terraform/ci_identity.tf's null_resource on every apply). Replaces
+  # the `az acr list` call this workflow used to make, which required at
+  # least Reader on the whole resource group.
+  ACR_LOGIN_SERVER: ${{ vars.ACR_LOGIN_SERVER }}
 
 permissions:
   id-token: write
@@ -28,17 +36,8 @@ jobs:
           tenant-id: ${{ secrets.AZURE_TENANT_ID }}
           subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
 
-      # ACR name embeds a subscription-derived hash suffix (see PR1 design),
-      # so it is discovered here instead of hardcoded or duplicated as a
-      # secret; exactly one ACR is provisioned in the resource group.
-      - name: Resolve ACR login server
-        id: acr
-        run: |
-          LOGIN_SERVER=$(az acr list --resource-group "$RESOURCE_GROUP" --query "[0].loginServer" -o tsv)
-          echo "login_server=$LOGIN_SERVER" >> "$GITHUB_OUTPUT"
-
       - name: ACR login
-        run: az acr login --name "${{ steps.acr.outputs.login_server }}"
+        run: az acr login --name "$ACR_LOGIN_SERVER"
 
       - name: Install uv
         uses: astral-sh/setup-uv@v5
@@ -59,7 +58,7 @@ jobs:
 
       - name: Build and push image
         run: |
-          IMAGE="${{ steps.acr.outputs.login_server }}/$IMAGE_NAME"
+          IMAGE="$ACR_LOGIN_SERVER/$IMAGE_NAME"
           docker build -t "$IMAGE:${{ github.sha }}" -t "$IMAGE:latest" .
           docker push "$IMAGE:${{ github.sha }}"
           docker push "$IMAGE:latest"
@@ -73,18 +72,17 @@ jobs:
       # holds the OIDC-authenticated ACR session from the step above.
       - name: Build and push monitoring images
         run: |
-          LOGIN_SERVER="${{ steps.acr.outputs.login_server }}"
-          docker build -t "$LOGIN_SERVER/prometheus:latest" ./prometheus
-          docker push "$LOGIN_SERVER/prometheus:latest"
-          docker build -t "$LOGIN_SERVER/grafana:latest" ./grafana
-          docker push "$LOGIN_SERVER/grafana:latest"
+          docker build -t "$ACR_LOGIN_SERVER/prometheus:latest" ./prometheus
+          docker push "$ACR_LOGIN_SERVER/prometheus:latest"
+          docker build -t "$ACR_LOGIN_SERVER/grafana:latest" ./grafana
+          docker push "$ACR_LOGIN_SERVER/grafana:latest"
 
       - name: Deploy new revision
         run: |
           az containerapp update \
             --name "$CONTAINER_APP_NAME" \
             --resource-group "$RESOURCE_GROUP" \
-            --image "${{ steps.acr.outputs.login_server }}/$IMAGE_NAME:${{ github.sha }}"
+            --image "$ACR_LOGIN_SERVER/$IMAGE_NAME:${{ github.sha }}"
 
       - name: Post-deploy health check
         run: |

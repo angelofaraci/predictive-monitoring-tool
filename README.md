@@ -155,6 +155,193 @@ tags with the commit SHA, pushes, and deploys on every push to `main`. See
 [`docs/fase-2.5-walking-skeleton.md`](docs/fase-2.5-walking-skeleton.md) for
 the architecture, the manual OIDC setup steps, and how to trigger a deploy.
 
+### Infrastructure hardening (Phase 9)
+
+Phase 9 hardens the Phase 2.5 walking skeleton into something on-call can
+trust: durable alert storage, no plaintext secrets, least-privilege CI,
+locked remote Terraform state, a cron-driven scheduler, and self-monitoring.
+No business logic changed. This section is the one findable place for the
+final architecture and the bootstrap runbook; earlier phase docs
+(`docs/fase-2.5-walking-skeleton.md` §2–3) describe the pre-Phase-9 shape
+and are left as historical record rather than duplicated or rewritten here.
+
+#### Final architecture
+
+```
+┌───────────────────────────────────────────────────────────────────┐
+│ GitHub Actions (OIDC — no stored client secret)                    │
+│   AcrPush @ ACR only              Container Apps Contributor        │
+│   (push app/prometheus/grafana)   @ API Container App only          │
+│                                    (az containerapp update / show)   │
+└──────────────┬────────────────────────────┬─────────────────────────┘
+               │                             │
+               ▼                             ▼
+   ┌───────────────────────┐     ┌─────────────────────────────────┐
+   │ ACR                   │     │ API Container App                │
+   │ (predictivemonitoring-│◀────│ min=max=1 replica, external       │
+   │  toolacr<hash>)       │pull │ ingress: /health /predict /ingest │
+   └───────────────────────┘  MI │ /alerts /agent/query /metrics     │
+                                  └──────┬─────────────────┬──────────┘
+                                         │ SMB mount        │ scrape (30s)
+                                         ▼                  ▼
+                        ┌────────────────────────┐  ┌────────────────────┐
+                        │ Azure Files share       │  │ Prometheus          │
+                        │ alerts.db               │  │ (internal-only,     │
+                        │ (alerts + cooldowns)    │  │  ephemeral TSDB)    │
+                        └───────────▲─────────────┘  └──────────┬──────────┘
+                                    │ SMB mount                 │ datasource
+                     cron */15 * * * *                          ▼
+              ┌─────────────────────┴───────┐        ┌────────────────────┐
+              │ Scheduler Job                │        │ Grafana             │
+              │ (one-shot per tick, same     │        │ (internal-only,     │
+              │  image, drains diagnosis     │        │  app-health          │
+              │  task before exit)           │        │  dashboard, file-    │
+              └───────────────────────────────┘        │  provisioned)      │
+                                                        └────────────────────┘
+
+  Key Vault (RBAC auth) ──Key Vault Secrets User──▶ API MI + Job MI
+       (secrets: llm-api-key, storage-account-key, grafana-admin-password)
+
+  Remote Terraform state: Azure Storage (blob, AAD-only auth, native
+  lease locking) — bootstrapped once by infra/terraform/bootstrap/,
+  never by the managed apply (runbook below).
+```
+
+Neither Prometheus nor Grafana has public ingress; the scheduler Job and
+the monitoring Container Apps are the two resources CI deliberately does
+**not** manage (see `infra/terraform/ci_identity.tf`) — a Phase 10 TODO
+if CI ever needs to redeploy them directly.
+
+#### Remote state bootstrap (one-time, human-run)
+
+`infra/terraform/providers.tf`'s `backend "azurerm"` block points at
+remote state that must exist before the managed config can `init`. A
+separate, intentionally-decoupled config provisions it, once, by hand —
+never inside the managed `terraform apply`:
+
+1. `cd infra/terraform/bootstrap && terraform init && terraform apply` —
+   creates a dedicated resource group (`pmt-tfstate-rg`), a GRS storage
+   account with `shared_access_key_enabled = false` (AAD-only data-plane
+   access, versioning, 30-day soft delete), and a `tfstate` blob
+   container. Both carry `prevent_destroy`. Grants the operator
+   `Storage Blob Data Contributor` on the account.
+2. Copy the three `terraform output` values (`resource_group_name`,
+   `storage_account_name`, `container_name`) into
+   `infra/terraform/providers.tf`'s `backend "azurerm"` block by hand —
+   backend blocks cannot reference variables or locals. These names are
+   not secret and are committed (already done for this environment:
+   `pmt-tfstate-rg` / `pmttfstate7c341fb4` / `tfstate`).
+3. Back up the pre-migration `infra/terraform/terraform.tfstate` outside
+   the repo, in case the migration needs to be rolled back.
+4. `cd infra/terraform && terraform init -migrate-state`, confirm the
+   prompt.
+5. **Gate**: `terraform plan` must report no changes. Verify locking by
+   racing two `terraform apply` runs — the second must report a
+   blob-lease conflict, not silently proceed.
+6. The local `terraform.tfstate*` files are already gitignored; leave
+   them untracked.
+7. Fresh environment only: the very first `terraform apply` must pass
+   `-var 'enable_kv_secret_refs=false'` (the Container App's identity
+   does not yet hold `Key Vault Secrets User` from `keyvault.tf` on a
+   brand-new environment), then re-apply with the default `true` once
+   that role assignment has propagated.
+
+**Recurring gotcha, seen repeatedly across this phase's real deploys**:
+any Container App/Job whose `secret{ key_vault_secret_id }` block or
+`registry{ identity = "System" }` depends on a role assignment created in
+the *same* apply is at risk of a role-propagation race — both ACR pull
+and Key Vault Secrets User resolution have hit this. Symptoms are an
+"Operation expired" timeout on first provisioning, or a revision failing
+with a "secret not found" error. This is a propagation delay, not a
+config bug: wait a few minutes and re-run `terraform apply` with the
+same variables; it typically finishes in well under a minute the second
+time. Do not "fix" it by widening the role grant.
+
+#### GitHub repository secrets & variables (one-time CI setup)
+
+| Name | Kind | Value | Source |
+|---|---|---|---|
+| `AZURE_CLIENT_ID` | secret | OIDC app registration client ID | Synced automatically by `null_resource.sync_github_client_id_secret` on every `terraform apply` (requires `gh` installed and authenticated on the apply machine) |
+| `AZURE_TENANT_ID` | secret | Azure AD tenant ID | Set once by hand: `terraform -chdir=infra/terraform output -raw azure_tenant_id` then `gh secret set AZURE_TENANT_ID --body "<value>"` (see `docs/fase-2.5-walking-skeleton.md` §3) |
+| `AZURE_SUBSCRIPTION_ID` | secret | Azure subscription ID | Same pattern as above, `azure_subscription_id` output |
+| `ACR_LOGIN_SERVER` | **variable** (not secret) | ACR login server hostname | Synced automatically by `null_resource.sync_acr_login_server_variable` (`infra/terraform/ci_identity.tf`) on every `terraform apply`; set once by hand if needed: `gh variable set ACR_LOGIN_SERVER --body "$(terraform -chdir=infra/terraform output -raw acr_login_server)"` |
+
+`ACR_LOGIN_SERVER` is a GitHub Actions **variable**, not a secret: the
+login server is deterministic Terraform output derived from the registry
+name, grants no access by itself, and isn't sensitive — using `vars.*`
+keeps `gh secret list` limited to actual credentials and lets the value
+show up directly in workflow logs for debugging. This replaces the
+`az acr list` call `deploy.yml` used to make (see
+`docs/fase-2.5-walking-skeleton.md` §4), which needed at least `Reader`
+on the whole resource group just to discover a value Terraform already
+knows deterministically.
+
+#### CI least privilege
+
+The GitHub Actions OIDC service principal holds exactly two scoped roles
+(`infra/terraform/ci_identity.tf`), replacing the original `Contributor`
+grant on the whole resource group:
+
+- **`AcrPush`** scoped to the ACR only — covers `az acr login` and
+  `docker push` for all three images CI builds (app, prometheus, grafana).
+  `AcrPush` includes pull, so no separate `AcrPull` grant is needed for CI.
+- **`Container Apps Contributor`** (built-in, not a custom role) scoped to
+  the API Container App resource only — covers `az containerapp update`
+  (deploy) and `az containerapp show` (health-check FQDN lookup), the only
+  two Container App calls `deploy.yml` makes. Verified live against this
+  subscription that the role's action set (`Microsoft.App/containerApps/*`
+  plus environment-join/read) grants nothing under `Microsoft.App/jobs/*`
+  — so even scoped narrowly, it structurally cannot reach the scheduler
+  Job.
+
+CI is **not** granted anything on the scheduler Job or the
+Prometheus/Grafana Container Apps: `deploy.yml` only pushes their images
+to the same ACR already covered by `AcrPush`, it never calls
+`containerapp update`/`show` on those three resources. **Phase 10
+follow-up**: if CI is ever extended to redeploy the scheduler Job or the
+monitoring apps directly, add scoped role assignments for exactly those
+resources at that time — not preemptively now.
+
+#### Definition of Done
+
+- [x] Alerts survive a redeploy of the Container App (Azure Files-mounted
+      SQLite, verified via a real cron tick + redeploy in this
+      environment)
+- [x] No credential appears as a literal value in `.tf`, workflow, or
+      container env — all via Key Vault reference
+- [ ] `deploy.yml` succeeds end-to-end with the narrowed OIDC role, and
+      `Contributor`-on-RG is gone from `.tf` — **role removed from
+      Terraform in this work unit; the maintainer runs the real
+      `terraform apply` + triggers a real CI run to confirm end-to-end**
+      (see risk note below)
+- [x] `terraform plan` is a no-op from a clean clone using the remote
+      backend, with locking demonstrably active
+- [x] Polling runs on the cron Job; API process no longer starts a
+      scheduler; cooldown suppression holds across separate job
+      executions
+- [x] `/metrics` is scraped by the internal Prometheus and the
+      `app-health` dashboard is provisioned from the versioned JSON with
+      no manual Grafana clicks (image build is a documented one-time
+      manual/CI step, see "Monitoring image build" below)
+- [x] Neither Grafana nor Prometheus is reachable from the public
+      internet
+- [x] README documents the bootstrap runbook and final architecture
+      (this section)
+
+#### Phase 10 follow-ups (deliberately out of scope for Phase 9)
+
+- **`/metrics` public-ingress exposure** — accepted Phase 9 tradeoff, full
+  detail in the "Observability" section below.
+- **Custom domain + managed TLS certificate** for the API Container App —
+  it currently answers only on its auto-generated
+  `*.azurecontainerapps.io` FQDN; Azure Container Apps supports both
+  natively for external ingress, just not configured yet.
+- **Widen CI's scoped roles** (`infra/terraform/ci_identity.tf`) only if a
+  future phase has `deploy.yml` actually call `containerapp update`/`show`
+  on the scheduler Job or the Prometheus/Grafana Container Apps — see the
+  "CI least privilege" note above for why that grant is deliberately
+  absent today.
+
 Phase 4 adds three endpoints on top of `/health`: `POST /predict`
 (stateless inference), `POST /ingest` (runs the full pipeline and persists
 detected anomalies), and `GET /alerts` (alert history). The model is loaded
@@ -347,19 +534,27 @@ a deliberate Phase 9 tradeoff, not an oversight. Phase 10 must add
 authentication or IP-restriction in front of `/metrics` specifically
 (e.g. a reverse-proxy sidecar, Container Apps' IP restriction rules
 scoped to a dedicated route, or splitting `/metrics` onto its own
-internal-only Container App with a private scrape path). Track this in
-the same Phase 10 bucket as the custom-domain/managed-certificate item
-noted for the CI/OIDC-narrowing work unit (Work Unit 7).
+internal-only Container App with a private scrape path). See "Phase 10
+follow-ups" under "Infrastructure hardening (Phase 9)" above for the full
+list of deferred items, including the custom-domain/managed-certificate
+one originally tracked against this work unit.
 
-### Monitoring image build (manual, one-time)
+### Monitoring image build (first-time manual step)
 
 Azure Container Apps has no docker-compose-style bind mount, so both
 monitoring images ship their config baked in via a small custom
-`Dockerfile` (`prometheus/Dockerfile`, `grafana/Dockerfile`). CI does not
-build or push these yet (tracked as a Work Unit 7 follow-up), so after
-`terraform apply` creates `infra/terraform/monitoring.tf`'s resources for
-the first time, build and push both images by hand, then re-apply with
-the real image references:
+`Dockerfile` (`prometheus/Dockerfile`, `grafana/Dockerfile`). `deploy.yml`
+now builds and pushes both images to ACR automatically on every push to
+`main` (Phase 9, Work Unit 7), reusing the same OIDC-authenticated ACR
+session the app image push uses. **That push alone does not redeploy the
+running Container Apps** — CI is deliberately not granted `containerapp
+update`/`show` on the Prometheus/Grafana apps (see "CI least privilege"
+above), and Terraform's own `lifecycle.ignore_changes` on their image
+field means a plain `terraform apply` won't pick up the new tag either.
+The one-time manual sequence below is still required both the first time
+(before these Container Apps have ever pointed at a real,
+non-placeholder image) and again any time `prometheus/prometheus.yml` or
+the Grafana provisioning files change and need to actually roll out:
 
 ```bash
 # 1. Prometheus needs the real API FQDN baked into its scrape config
