@@ -6,10 +6,14 @@ Spec: fase-7-orquestacion.md. One `Scheduler` instance owns:
   internal `api.ingestion.run_ingest()` function directly (never an HTTP
   loopback to `/ingest`), and never crashes the process on a Prometheus
   connection failure (logged, next cycle proceeds instead).
-- An in-memory cooldown map keyed by "alert type" (the `scenario` in demo
-  mode, or the dominant deviating metric in real mode — see
+- Cooldown/dedup state keyed by "alert type" (the `scenario` in demo mode,
+  or the dominant deviating metric in real mode — see
   `ingestion._dominant_metric()`), so a persistent anomaly across many poll
   cycles produces exactly one alert and one diagnosis, not one per cycle.
+  Phase 9: this state is persisted in the same SQLite db as alerts via
+  `storage.get_cooldown_expiry()`/`storage.set_cooldown()` (previously an
+  in-memory dict on `Scheduler`, reset on every process restart) so
+  suppression survives across separate one-shot Job executions.
 - Fire-and-forget background tasks that call the Phase 6 agent's
   `diagnose_alert(alert_id)` and persist the result via
   `storage.save_diagnosis()` — created with `asyncio.create_task()` and
@@ -99,10 +103,11 @@ class Scheduler:
         self.cooldown_seconds = (
             cooldown_seconds if cooldown_seconds is not None else resolve_cooldown_seconds()
         )
-        # alert_type -> cooldown expiry (in-memory only; resets on restart,
-        # which is acceptable — spec asks only for "alert fatigue" relief
-        # within a running process, not durable dedup state).
-        self._cooldowns: dict[str, datetime] = {}
+        # Cooldown state itself now lives in SQLite (`storage.get_cooldown_expiry()`/
+        # `storage.set_cooldown()`) — see the class docstring's Phase 9 note. No
+        # in-memory `self._cooldowns` dict anymore; this instance holds no
+        # cooldown state of its own, so a fresh instance against the same db
+        # file (e.g. after a process restart) still honours an active cooldown.
         self._loop_task: asyncio.Task[None] | None = None
         self._background_tasks: set[asyncio.Task[None]] = set()
 
@@ -155,7 +160,7 @@ class Scheduler:
             return
 
         alert_type = result.alert_type or "unknown"
-        if self._in_cooldown(alert_type):
+        if await asyncio.to_thread(self._in_cooldown, alert_type):
             logger.info(
                 "Anomaly type %r suppressed by cooldown (no new alert, no diagnosis)",
                 alert_type,
@@ -175,15 +180,15 @@ class Scheduler:
             logger.exception("Failed to persist new alert; will retry next cycle")
             return
 
-        self._start_cooldown(alert_type)
+        await asyncio.to_thread(self._start_cooldown, alert_type)
         self._trigger_diagnosis(alert_id)
 
     def _in_cooldown(self, alert_type: str) -> bool:
-        expires_at = self._cooldowns.get(alert_type)
+        expires_at = storage.get_cooldown_expiry(alert_type)
         return expires_at is not None and datetime.now(UTC) < expires_at
 
     def _start_cooldown(self, alert_type: str) -> None:
-        self._cooldowns[alert_type] = datetime.now(UTC) + timedelta(seconds=self.cooldown_seconds)
+        storage.set_cooldown(alert_type, datetime.now(UTC) + timedelta(seconds=self.cooldown_seconds))
 
     def _trigger_diagnosis(self, alert_id: int) -> None:
         """Schedule the diagnosis as an independent task — NOT awaited, so

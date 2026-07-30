@@ -266,6 +266,58 @@ class TestSchedulerStartStop:
         _run(_flow())
 
 
+class TestCooldownSurvivesFreshSchedulerInstance:
+    """spec domain `alert-cooldown` (MODIFIED): cooldown/dedup state is
+    persisted in SQLite, so it survives across separate one-shot Job
+    executions. Simulated here with a brand-new `Scheduler` instance (no
+    shared in-memory state with the first) against the same underlying db
+    file, standing in for a process restart."""
+
+    def test_second_scheduler_instance_still_suppresses_an_active_cooldown(
+        self, tmp_path, monkeypatch
+    ):
+        monkeypatch.setattr(storage, "DB_PATH", tmp_path / "alerts.db")
+        monkeypatch.setattr(sched, "run_ingest", lambda *a, **kw: _fake_anomaly_result())
+        monkeypatch.setattr(sched, "diagnose_alert", lambda alert_id: _immediate_answer())
+
+        first_scheduler = _make_scheduler(cooldown_seconds=900)
+
+        async def _first_cycle():
+            await first_scheduler.run_once()
+            await first_scheduler.stop()
+
+        _run(_first_cycle())
+
+        # Simulate a process restart: a brand-new Scheduler instance, no
+        # shared in-memory state with `first_scheduler`, same db file.
+        second_scheduler = _make_scheduler(cooldown_seconds=900)
+        _run(second_scheduler.run_once())
+
+        alerts = storage.list_alerts()
+        assert len(alerts) == 1  # 2nd cycle was suppressed by the persisted cooldown
+
+    def test_second_scheduler_instance_allows_a_new_alert_after_expiry(
+        self, tmp_path, monkeypatch
+    ):
+        monkeypatch.setattr(storage, "DB_PATH", tmp_path / "alerts.db")
+        monkeypatch.setattr(sched, "run_ingest", lambda *a, **kw: _fake_anomaly_result())
+        monkeypatch.setattr(sched, "diagnose_alert", lambda alert_id: _immediate_answer())
+
+        first_scheduler = _make_scheduler(cooldown_seconds=0)
+
+        async def _first_cycle():
+            await first_scheduler.run_once()
+            await first_scheduler.stop()
+
+        _run(_first_cycle())
+
+        second_scheduler = _make_scheduler(cooldown_seconds=0)
+        _run(second_scheduler.run_once())
+
+        alerts = storage.list_alerts()
+        assert len(alerts) == 2  # cooldown already expired; 2nd cycle recorded a new alert
+
+
 def _matrix_response(index: pd.DatetimeIndex, values: list[float]) -> dict:
     return {
         "status": "success",
