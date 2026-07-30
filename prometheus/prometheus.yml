@@ -1,0 +1,30 @@
+# Static scrape config, baked into the image by prometheus/Dockerfile
+# (design ADR #7 — Container Apps has no docker-compose-style bind mount,
+# so config-as-code means COPYing a real file into a small custom image
+# built FROM the upstream one).
+#
+# The scrape target below MUST be the API Container App's real FQDN
+# before this image is built — it cannot be templated at deploy time the
+# way a Terraform-managed env var can, because Prometheus itself has no
+# native env-var interpolation for its config file (unlike Grafana's
+# provisioning files, see grafana/provisioning/datasources/prometheus.yaml).
+# This mirrors the existing "copy a Terraform output into a committed
+# file, then rebuild" convention already used for the remote-state backend
+# (infra/terraform/providers.tf's backend block / README bootstrap
+# runbook). Get the real value with:
+#
+#   terraform -chdir=infra/terraform output -raw container_app_fqdn
+#
+# then replace the placeholder host below, commit, and rebuild this image
+# (see README's "Monitoring image build" section for the exact
+# build/push commands).
+global:
+  scrape_interval: 30s
+  scrape_timeout: 10s
+
+scrape_configs:
+  - job_name: "predictive-monitoring-tool-api"
+    scheme: https
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["REPLACE_WITH_CONTAINER_APP_FQDN"]

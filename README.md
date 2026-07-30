@@ -351,6 +351,54 @@ internal-only Container App with a private scrape path). Track this in
 the same Phase 10 bucket as the custom-domain/managed-certificate item
 noted for the CI/OIDC-narrowing work unit (Work Unit 7).
 
+### Monitoring image build (manual, one-time)
+
+Azure Container Apps has no docker-compose-style bind mount, so both
+monitoring images ship their config baked in via a small custom
+`Dockerfile` (`prometheus/Dockerfile`, `grafana/Dockerfile`). CI does not
+build or push these yet (tracked as a Work Unit 7 follow-up), so after
+`terraform apply` creates `infra/terraform/monitoring.tf`'s resources for
+the first time, build and push both images by hand, then re-apply with
+the real image references:
+
+```bash
+# 1. Prometheus needs the real API FQDN baked into its scrape config
+#    before it is built — get it from Terraform, paste it into
+#    prometheus/prometheus.yml (replacing REPLACE_WITH_CONTAINER_APP_FQDN),
+#    and commit that change.
+terraform -chdir=infra/terraform output -raw container_app_fqdn
+
+# 2. Log in to the existing ACR (same one the main app/job already use).
+ACR_LOGIN_SERVER=$(terraform -chdir=infra/terraform output -raw acr_login_server)
+az acr login --name "${ACR_LOGIN_SERVER%%.*}"
+
+# 3. Build and push both images (or use `az acr build` instead of a local
+#    docker daemon — same effect, remote build):
+docker build -t "$ACR_LOGIN_SERVER/prometheus:latest" ./prometheus
+docker push "$ACR_LOGIN_SERVER/prometheus:latest"
+
+docker build -t "$ACR_LOGIN_SERVER/grafana:latest" ./grafana
+docker push "$ACR_LOGIN_SERVER/grafana:latest"
+
+# 4. Point Terraform at the real images (the `lifecycle.ignore_changes`
+#    block on both Container Apps means Terraform will not overwrite the
+#    image again after this).
+terraform -chdir=infra/terraform apply \
+  -var "prometheus_image=$ACR_LOGIN_SERVER/prometheus:latest" \
+  -var "grafana_image=$ACR_LOGIN_SERVER/grafana:latest"
+
+# 5. Verify (both apps are internal-only, so there is no public URL to
+#    curl — exec into the environment instead):
+az containerapp exec --name predictive-monitoring-tool-graf \
+  --resource-group predictive-monitoring-tool-rg \
+  --command "curl -s -u admin:$(az keyvault secret show --vault-name <kv-name> --name grafana-admin-password --query value -o tsv) http://localhost:3000/api/dashboards/uid/app-health"
+```
+
+Until step 4 runs, both Container Apps run the public upstream images
+with no config baked in (Prometheus has no scrape target, Grafana has no
+provisioned datasource/dashboard) — this is expected and matches the
+existing `var.container_image` placeholder pattern.
+
 ## Tests
 
 ```bash

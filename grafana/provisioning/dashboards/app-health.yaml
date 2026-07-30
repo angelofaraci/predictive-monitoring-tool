@@ -1,0 +1,15 @@
+# Native Grafana file-based dashboard provisioning: points Grafana at the
+# folder this image COPYs grafana/dashboards/app-health.json into
+# (see grafana/Dockerfile), so the dashboard appears with zero manual
+# clicks after container start.
+apiVersion: 1
+
+providers:
+  - name: app-health
+    orgId: 1
+    folder: ""
+    type: file
+    disableDeletion: true
+    updateIntervalSeconds: 0
+    options:
+      path: /var/lib/grafana/dashboards

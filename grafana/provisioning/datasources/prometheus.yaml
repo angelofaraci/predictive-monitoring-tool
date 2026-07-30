@@ -1,0 +1,16 @@
+# Native Grafana file-based datasource provisioning. `${PROMETHEUS_URL}`
+# is expanded by Grafana itself at startup (native environment-variable
+# interpolation in provisioning files, no custom script — see Grafana
+# docs: "Using environment variables"), sourced from the
+# `PROMETHEUS_URL` env var wired in infra/terraform/monitoring.tf onto
+# the Grafana Container App, which points at the internal Prometheus
+# Container App's own FQDN.
+apiVersion: 1
+
+datasources:
+  - name: Prometheus
+    type: prometheus
+    access: proxy
+    url: ${PROMETHEUS_URL}
+    isDefault: true
+    editable: false

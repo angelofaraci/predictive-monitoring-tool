@@ -64,3 +64,15 @@ variable "poll_cron_expression" {
   type        = string
   default     = "*/15 * * * *"
 }
+
+variable "prometheus_image" {
+  description = "Container image deployed to the internal-only Prometheus Container App (infra/terraform/monitoring.tf). Defaults to the public upstream image so `terraform apply` succeeds standalone, before the custom image (prometheus/Dockerfile, with the scrape config baked in) has been built and pushed to the ACR by hand."
+  type        = string
+  default     = "prom/prometheus:v2.55.1"
+}
+
+variable "grafana_image" {
+  description = "Container image deployed to the internal-only Grafana Container App (infra/terraform/monitoring.tf). Defaults to the public upstream image so `terraform apply` succeeds standalone, before the custom image (grafana/Dockerfile, with datasource/dashboard provisioning baked in) has been built and pushed to the ACR by hand."
+  type        = string
+  default     = "grafana/grafana:11.2.0"
+}
