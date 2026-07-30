@@ -77,11 +77,31 @@ resource "azurerm_container_app" "main" {
   template {
     min_replicas = 0
 
+    # Backs `api/storage.py`'s `alerts.db` via
+    # `azurerm_container_app_environment_storage.alerts` (storage.tf) so
+    # alert/cooldown data survives redeploys and revision restarts (spec
+    # domain `infra-persistence`). Not yet consumed by the app itself in
+    # this work unit — the `ALERTS_DB_PATH` env var wiring, KV secret
+    # references, and the `min_replicas = max_replicas = 1` single-writer
+    # pin all land together in the Scheduler Job work unit (design ADR #2
+    # requires the replica pin before the mounted path is actually used
+    # for concurrent writes).
+    volume {
+      name         = "alerts-data"
+      storage_name = azurerm_container_app_environment_storage.alerts.name
+      storage_type = "AzureFile"
+    }
+
     container {
       name   = var.project
       image  = var.container_image
       cpu    = 0.25
       memory = "0.5Gi"
+
+      volume_mounts {
+        name = "alerts-data"
+        path = "/data"
+      }
     }
   }
 }
