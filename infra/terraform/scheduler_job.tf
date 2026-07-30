@@ -103,6 +103,15 @@ resource "azurerm_container_app_job" "scheduler" {
       }
     }
   }
+
+  # Mirrors azurerm_container_app.main's identical block: var.container_image
+  # only exists so a standalone `terraform apply` succeeds before any image
+  # has been built. CI does not yet update this Job's image tag (tracked as
+  # a Work Unit 7 follow-up alongside the OIDC role narrowing) but ignoring
+  # drift here now avoids a future bare `apply` clobbering it once CI does.
+  lifecycle {
+    ignore_changes = [template[0].container[0].image]
+  }
 }
 
 # Lets the job's own managed identity pull the (shared) application image

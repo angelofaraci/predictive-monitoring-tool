@@ -59,6 +59,15 @@ resource "azurerm_container_app" "main" {
     type = "SystemAssigned"
   }
 
+  # deploy.yml calls `az containerapp update --image ...` on every push to
+  # main, independently of Terraform. var.container_image only exists so a
+  # standalone `terraform apply` succeeds before any image has been built;
+  # ignoring drift here stops apply from clobbering CI's deployed tag back
+  # to that placeholder.
+  lifecycle {
+    ignore_changes = [template[0].container[0].image]
+  }
+
   ingress {
     external_enabled = true
     target_port      = 8000
