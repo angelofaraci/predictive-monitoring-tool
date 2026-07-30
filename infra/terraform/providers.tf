@@ -32,7 +32,7 @@ terraform {
   # `terraform init -migrate-state` here.
   backend "azurerm" {
     resource_group_name  = "pmt-tfstate-rg"
-    storage_account_name = "REPLACE_WITH_BOOTSTRAP_OUTPUT_storage_account_name"
+    storage_account_name = "pmttfstate7c341fb4"
     container_name       = "tfstate"
     key                  = "predictive-monitoring-tool.tfstate"
     use_azuread_auth     = true
