@@ -17,6 +17,11 @@ terraform {
 
 provider "azurerm" {
   features {}
+  # Required because azurerm_storage_account.tfstate sets
+  # shared_access_key_enabled = false — without this, the provider's own
+  # post-create data-plane readiness poll tries key-based auth and fails
+  # with a 403 (KeyBasedAuthenticationNotPermitted).
+  storage_use_azuread = true
 }
 
 data "azurerm_client_config" "current" {}
