@@ -45,3 +45,16 @@ variable "image_tag" {
   type        = string
   default     = "latest"
 }
+
+variable "llm_api_key" {
+  description = "API key for the external LLM provider used by the diagnosis agent. Provide via TF_VAR_llm_api_key or a gitignored *.auto.tfvars file — never commit a real value. Stored as a Key Vault secret (see keyvault.tf); the placeholder default lets `terraform apply` succeed before a real key is issued."
+  type        = string
+  sensitive   = true
+  default     = "REPLACE_WITH_REAL_LLM_API_KEY"
+}
+
+variable "enable_kv_secret_refs" {
+  description = "Controls whether the Container App's secret{ key_vault_secret_id } blocks are wired up (added alongside those blocks in main.tf by a later work unit). Set to false only for the first `terraform apply` on a brand-new environment, where the Container App's SystemAssigned identity does not yet have the Key Vault Secrets User role from keyvault.tf and Azure would otherwise fail to resolve the KV reference during Container App creation. Re-apply with the default true once that role assignment has propagated."
+  type        = bool
+  default     = true
+}
