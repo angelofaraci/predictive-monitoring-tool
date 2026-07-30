@@ -64,6 +64,21 @@ jobs:
           docker push "$IMAGE:${{ github.sha }}"
           docker push "$IMAGE:latest"
 
+      # Phase 9 monitoring stack (infra/terraform/monitoring.tf): custom
+      # Prometheus/Grafana images bake in config-as-code (scrape target,
+      # dashboard provisioning) since Container Apps has no bind-mount
+      # equivalent. Built here because this sandbox has neither local
+      # Docker nor `az acr build` (ACR Tasks disabled on this
+      # subscription) — CI's runner has Docker preinstalled and already
+      # holds the OIDC-authenticated ACR session from the step above.
+      - name: Build and push monitoring images
+        run: |
+          LOGIN_SERVER="${{ steps.acr.outputs.login_server }}"
+          docker build -t "$LOGIN_SERVER/prometheus:latest" ./prometheus
+          docker push "$LOGIN_SERVER/prometheus:latest"
+          docker build -t "$LOGIN_SERVER/grafana:latest" ./grafana
+          docker push "$LOGIN_SERVER/grafana:latest"
+
       - name: Deploy new revision
         run: |
           az containerapp update \
