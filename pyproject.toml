@@ -35,6 +35,7 @@ notebooks = [
 
 [project.scripts]
 pmt-mcp = "predictive_monitoring_tool.mcp_server.__main__:main"
+pmt-poll = "predictive_monitoring_tool.orchestration.job:main"
 
 [build-system]
 requires = ["hatchling"]
