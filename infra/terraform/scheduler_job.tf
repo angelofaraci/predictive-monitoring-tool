@@ -81,12 +81,20 @@ resource "azurerm_container_app_job" "scheduler" {
         value = "/data/alerts.db"
       }
 
+      # Groq's free tier (langchain-groq) reads GROQ_API_KEY itself; the
+      # AGENT_LLM_MODEL override (read by agent/graph.py's build_chat_model)
+      # points init_chat_model() at Groq instead of its OpenAI default.
       dynamic "env" {
         for_each = var.enable_kv_secret_refs ? [1] : []
         content {
-          name        = "OPENAI_API_KEY"
+          name        = "GROQ_API_KEY"
           secret_name = "llm-api-key"
         }
+      }
+
+      env {
+        name  = "AGENT_LLM_MODEL"
+        value = "groq:llama-3.3-70b-versatile"
       }
 
       volume_mounts {

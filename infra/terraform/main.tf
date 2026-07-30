@@ -124,18 +124,22 @@ resource "azurerm_container_app" "main" {
         value = "/data/alerts.db"
       }
 
-      # Consumed by langchain's init_chat_model() default provider
-      # ("openai:gpt-4o-mini", see agent/graph.py's DEFAULT_MODEL) — the
-      # OpenAI SDK reads this exact env var name itself; no explicit
-      # api_key plumbing exists in this codebase to redirect it elsewhere.
+      # Groq's free tier (langchain-groq) reads GROQ_API_KEY itself; the
+      # AGENT_LLM_MODEL override (read by agent/graph.py's build_chat_model)
+      # points init_chat_model() at Groq instead of its OpenAI default.
       # Gated the same way as the secret{} block above: only wired once
       # var.enable_kv_secret_refs is true.
       dynamic "env" {
         for_each = var.enable_kv_secret_refs ? [1] : []
         content {
-          name        = "OPENAI_API_KEY"
+          name        = "GROQ_API_KEY"
           secret_name = "llm-api-key"
         }
+      }
+
+      env {
+        name  = "AGENT_LLM_MODEL"
+        value = "groq:llama-3.3-70b-versatile"
       }
 
       volume_mounts {
