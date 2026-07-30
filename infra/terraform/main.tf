@@ -74,18 +74,39 @@ resource "azurerm_container_app" "main" {
     identity = "System"
   }
 
+  # Gated by var.enable_kv_secret_refs (design ADR #8, keyvault.tf's
+  # sequencing note): on a brand-new environment's first apply, the
+  # Container App's SystemAssigned identity does not yet have the Key
+  # Vault Secrets User role (keyvault.tf depends on this app's identity
+  # existing first), so this block must be omitted entirely rather than
+  # reference a KV secret Azure cannot yet resolve. Re-apply with the
+  # default true once that role assignment has propagated.
+  dynamic "secret" {
+    for_each = var.enable_kv_secret_refs ? [1] : []
+    content {
+      name                = "llm-api-key"
+      key_vault_secret_id = azurerm_key_vault_secret.llm_api_key.id
+      identity            = "System"
+    }
+  }
+
   template {
-    min_replicas = 0
+    # Single-writer pin (design ADR #2): the mounted /data/alerts.db is a
+    # plain SQLite file over SMB, never WAL. More than one API replica
+    # would mean more than one writer beyond the two the design accounts
+    # for (this app + the scheduler Job's own tick), so scale-out is
+    # deliberately disabled — final for Phase 9, not revisited here (see
+    # apply-progress decision-lock #1).
+    min_replicas = 1
+    max_replicas = 1
 
     # Backs `api/storage.py`'s `alerts.db` via
     # `azurerm_container_app_environment_storage.alerts` (storage.tf) so
     # alert/cooldown data survives redeploys and revision restarts (spec
-    # domain `infra-persistence`). Not yet consumed by the app itself in
-    # this work unit — the `ALERTS_DB_PATH` env var wiring, KV secret
-    # references, and the `min_replicas = max_replicas = 1` single-writer
-    # pin all land together in the Scheduler Job work unit (design ADR #2
-    # requires the replica pin before the mounted path is actually used
-    # for concurrent writes).
+    # domain `infra-persistence`). Wired into the Scheduler Job work unit
+    # below via `ALERTS_DB_PATH`, matching the same mounted path used by
+    # scheduler_job.tf's own volume mount, so both writers agree on one
+    # file.
     volume {
       name         = "alerts-data"
       storage_name = azurerm_container_app_environment_storage.alerts.name
@@ -97,6 +118,25 @@ resource "azurerm_container_app" "main" {
       image  = var.container_image
       cpu    = 0.25
       memory = "0.5Gi"
+
+      env {
+        name  = "ALERTS_DB_PATH"
+        value = "/data/alerts.db"
+      }
+
+      # Consumed by langchain's init_chat_model() default provider
+      # ("openai:gpt-4o-mini", see agent/graph.py's DEFAULT_MODEL) — the
+      # OpenAI SDK reads this exact env var name itself; no explicit
+      # api_key plumbing exists in this codebase to redirect it elsewhere.
+      # Gated the same way as the secret{} block above: only wired once
+      # var.enable_kv_secret_refs is true.
+      dynamic "env" {
+        for_each = var.enable_kv_secret_refs ? [1] : []
+        content {
+          name        = "OPENAI_API_KEY"
+          secret_name = "llm-api-key"
+        }
+      }
 
       volume_mounts {
         name = "alerts-data"

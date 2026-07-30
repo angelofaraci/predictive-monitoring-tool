@@ -58,3 +58,9 @@ variable "enable_kv_secret_refs" {
   type        = bool
   default     = true
 }
+
+variable "poll_cron_expression" {
+  description = "Cron expression (UTC) driving the scheduler Container App Job's schedule_trigger_config (infra/terraform/scheduler_job.tf). Default cadence (every 15 minutes) matches orchestration/scheduler.py's MIN_POLL_INTERVAL_SECONDS floor, itself pinned to api/inference.py's MINIMUM_HISTORY_WINDOW — do not lower this below 15 minutes without also revisiting that floor."
+  type        = string
+  default     = "*/15 * * * *"
+}
