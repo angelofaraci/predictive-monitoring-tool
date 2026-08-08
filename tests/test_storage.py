@@ -16,6 +16,8 @@ from concurrent.futures import ProcessPoolExecutor
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
+import pandas as pd
+
 from predictive_monitoring_tool.api import storage
 
 
@@ -184,3 +186,169 @@ class TestConcurrentWriters:
 
         for i in range(writes_per_worker):
             assert storage.get_cooldown_expiry(f"type_{i}", db_path=db_path) is not None
+
+
+def _metrics_frame(timestamps: list[datetime], **columns: list[float]) -> pd.DataFrame:
+    index = pd.DatetimeIndex(timestamps)
+    return pd.DataFrame(columns, index=index)
+
+
+class TestMetricsHistorySchema:
+    """spec domain `metrics-history`, requirement "Schema Consistency with
+    Existing Storage Pattern": `metrics_history` follows the same
+    `_connect`/`init_db` idempotent-creation pattern as `alerts`."""
+
+    def test_init_db_creates_metrics_history_table(self, tmp_path):
+        db_path = tmp_path / "alerts.db"
+
+        storage.init_db(db_path)
+
+        with storage._connect(db_path) as conn:
+            tables = {
+                row[0]
+                for row in conn.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table'"
+                )
+            }
+        assert "metrics_history" in tables
+
+    def test_init_db_is_idempotent_and_preserves_existing_rows(self, tmp_path):
+        db_path = tmp_path / "alerts.db"
+        storage.init_db(db_path)
+        frame = _metrics_frame(
+            [datetime(2025, 1, 1, tzinfo=UTC)], cpu_pct=[50.0]
+        )
+        storage.insert_metrics_history(frame, db_path=db_path)
+
+        storage.init_db(db_path)  # must not raise, must not wipe data
+
+        start = datetime(2020, 1, 1, tzinfo=UTC)
+        end = datetime(2030, 1, 1, tzinfo=UTC)
+        assert len(storage.read_metrics_history(start, end, db_path=db_path)) == 1
+
+
+class TestMetricsHistoryInsert:
+    """spec domain `metrics-history`, requirement "Scrape-Granularity
+    Storage": inserts dedup on `timestamp` (primary key)."""
+
+    def test_insert_new_rows_returns_count_inserted(self, tmp_path):
+        db_path = tmp_path / "alerts.db"
+        frame = _metrics_frame(
+            [
+                datetime(2025, 1, 1, 0, 0, 0, tzinfo=UTC),
+                datetime(2025, 1, 1, 0, 0, 15, tzinfo=UTC),
+            ],
+            cpu_pct=[10.0, 12.0],
+            memory_pct=[40.0, 41.0],
+        )
+
+        inserted = storage.insert_metrics_history(frame, db_path=db_path)
+
+        assert inserted == 2
+
+    def test_reinserting_the_same_timestamp_is_deduplicated(self, tmp_path):
+        db_path = tmp_path / "alerts.db"
+        ts = datetime(2025, 1, 1, 0, 0, 0, tzinfo=UTC)
+        frame = _metrics_frame([ts], cpu_pct=[10.0])
+        storage.insert_metrics_history(frame, db_path=db_path)
+
+        second_inserted = storage.insert_metrics_history(frame, db_path=db_path)
+
+        assert second_inserted == 0
+        start = datetime(2020, 1, 1, tzinfo=UTC)
+        end = datetime(2030, 1, 1, tzinfo=UTC)
+        assert len(storage.read_metrics_history(start, end, db_path=db_path)) == 1
+
+
+class TestMetricsHistoryRangeRead:
+    """spec domain `metrics-history`, requirement "Bounded Range Read"."""
+
+    def test_range_read_returns_ordered_rows_within_bounds(self, tmp_path):
+        db_path = tmp_path / "alerts.db"
+        base = datetime(2025, 1, 1, tzinfo=UTC)
+        timestamps = [base + timedelta(minutes=i) for i in range(5)]
+        # Insert out of order to prove the read re-orders by timestamp.
+        frame = _metrics_frame(
+            [timestamps[3], timestamps[0], timestamps[4], timestamps[1], timestamps[2]],
+            cpu_pct=[3.0, 0.0, 4.0, 1.0, 2.0],
+        )
+        storage.insert_metrics_history(frame, db_path=db_path)
+
+        result = storage.read_metrics_history(
+            timestamps[1], timestamps[3], db_path=db_path
+        )
+
+        assert list(result.index) == [
+            pd.Timestamp(timestamps[1]),
+            pd.Timestamp(timestamps[2]),
+            pd.Timestamp(timestamps[3]),
+        ]
+        assert list(result["cpu_pct"]) == [1.0, 2.0, 3.0]
+
+
+class TestMetricsHistorySpan:
+    """Support for the setup dashboard's training-readiness state (spec
+    domain `setup-dashboard`, "Training Readiness State"): a lightweight
+    count + span query, without materializing the whole history frame."""
+
+    def test_empty_table_reports_zero_count_and_no_bounds(self, tmp_path):
+        db_path = tmp_path / "alerts.db"
+
+        count, start, end = storage.metrics_history_span(db_path=db_path)
+
+        assert count == 0
+        assert start is None
+        assert end is None
+
+    def test_populated_table_reports_count_and_min_max_timestamps(self, tmp_path):
+        db_path = tmp_path / "alerts.db"
+        timestamps = [
+            datetime(2025, 1, 1, tzinfo=UTC),
+            datetime(2025, 1, 2, tzinfo=UTC),
+            datetime(2025, 1, 3, tzinfo=UTC),
+        ]
+        frame = _metrics_frame(timestamps, cpu_pct=[1.0, 2.0, 3.0])
+        storage.insert_metrics_history(frame, db_path=db_path)
+
+        count, start, end = storage.metrics_history_span(db_path=db_path)
+
+        assert count == 3
+        assert start == pd.Timestamp(timestamps[0])
+        assert end == pd.Timestamp(timestamps[2])
+
+
+class TestMetricsHistoryPrune:
+    """spec domain `metrics-history`, requirement "30-Day Retention
+    Pruning"."""
+
+    def test_prune_removes_rows_older_than_30_days_keeps_recent(self, tmp_path):
+        db_path = tmp_path / "alerts.db"
+        now = datetime(2025, 6, 1, tzinfo=UTC)
+        old_ts = now - timedelta(days=31)
+        recent_ts = now - timedelta(days=1)
+        frame = _metrics_frame([old_ts, recent_ts], cpu_pct=[9.0, 10.0])
+        storage.insert_metrics_history(frame, db_path=db_path)
+
+        deleted = storage.prune_metrics_history(now=now, db_path=db_path)
+
+        assert deleted == 1
+        start = datetime(2000, 1, 1, tzinfo=UTC)
+        end = datetime(2030, 1, 1, tzinfo=UTC)
+        remaining = storage.read_metrics_history(start, end, db_path=db_path)
+        assert list(remaining.index) == [pd.Timestamp(recent_ts)]
+
+    def test_prune_boundary_row_exactly_30_days_old_is_not_deleted_prematurely(
+        self, tmp_path
+    ):
+        db_path = tmp_path / "alerts.db"
+        now = datetime(2025, 6, 1, tzinfo=UTC)
+        boundary_ts = now - timedelta(days=30)
+        frame = _metrics_frame([boundary_ts], cpu_pct=[9.0])
+        storage.insert_metrics_history(frame, db_path=db_path)
+
+        storage.prune_metrics_history(now=now, db_path=db_path)
+
+        start = datetime(2000, 1, 1, tzinfo=UTC)
+        end = datetime(2030, 1, 1, tzinfo=UTC)
+        remaining = storage.read_metrics_history(start, end, db_path=db_path)
+        assert list(remaining.index) == [pd.Timestamp(boundary_ts)]
