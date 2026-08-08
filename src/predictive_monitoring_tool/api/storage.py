@@ -30,8 +30,10 @@ from __future__ import annotations
 import os
 import sqlite3
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
+
+import pandas as pd
 
 # `ALERTS_DB_PATH` overrides the default relative path (spec domain
 # `infra-persistence`, "Configurable database path"). Resolved once at
@@ -75,6 +77,40 @@ CREATE TABLE IF NOT EXISTS alert_cooldowns (
     expires_at TEXT NOT NULL
 )
 """
+
+# Per-installation training mode (spec domain `metrics-history`): raw
+# Prometheus readings at scrape granularity (default 15s), independent of
+# the scheduler's 900s poll cadence, so `build_features()`'s window >
+# interval precondition holds. Deliberately NOT imported from
+# `data.generator.EXPECTED_COLUMNS` — keeps this module's schema
+# self-contained the same way `alerts`' own columns are spelled out
+# literally above, rather than adding a `data/` import to `api/storage.py`.
+# One row per timestamp (wide schema, design decision: "Wide
+# `metrics_history` table over long/EAV") — NULL means that metric was not
+# queried this poll, not "value was zero".
+METRICS_HISTORY_COLUMNS: tuple[str, ...] = (
+    "cpu_pct",
+    "memory_pct",
+    "disk_pct",
+    "latency_ms",
+    "requests_per_sec",
+)
+
+_CREATE_METRICS_HISTORY_TABLE_SQL = """
+CREATE TABLE IF NOT EXISTS metrics_history (
+    timestamp TEXT PRIMARY KEY,
+    cpu_pct REAL,
+    memory_pct REAL,
+    disk_pct REAL,
+    latency_ms REAL,
+    requests_per_sec REAL
+)
+"""
+
+# 30-day retention (spec: "30-Day Retention Pruning"). The boundary row
+# (exactly 30 days old) MUST survive, so pruning deletes strictly older
+# than `now - METRICS_HISTORY_RETENTION_DAYS`.
+METRICS_HISTORY_RETENTION_DAYS = 30
 
 
 @dataclass(frozen=True)
@@ -130,6 +166,7 @@ def init_db(db_path: Path | None = None) -> None:
         conn.execute(_CREATE_TABLE_SQL)
         _ensure_evolved_columns(conn)
         conn.execute(_CREATE_COOLDOWNS_TABLE_SQL)
+        conn.execute(_CREATE_METRICS_HISTORY_TABLE_SQL)
 
 
 def insert_alert(
@@ -273,6 +310,105 @@ def purge_expired_cooldowns(
         cursor = conn.execute(
             "DELETE FROM alert_cooldowns WHERE expires_at < ?",
             (moment.isoformat(),),
+        )
+        return cursor.rowcount
+
+
+def insert_metrics_history(df: pd.DataFrame, *, db_path: Path | None = None) -> int:
+    """Insert `df`'s rows into `metrics_history`, one row per index entry.
+
+    `df` MUST have a `DatetimeIndex`; any of `METRICS_HISTORY_COLUMNS` not
+    present in `df` are persisted as `NULL` (metric not queried this poll,
+    spec: "NULL = metric not queried"). Dedups on the `timestamp` primary
+    key via `INSERT OR IGNORE` — replaying an already-captured window (the
+    5-minute overlap in `api/ingestion.py`'s 20-minute lookback every 15
+    minutes) is a silent no-op for rows already stored.
+
+    Returns the number of rows actually inserted (excludes ignored
+    duplicates) — computed from `conn.total_changes` since `executemany`'s
+    `cursor.rowcount` is unreliable for `INSERT OR IGNORE` batches.
+    """
+    resolved = _resolve(db_path)
+    init_db(resolved)
+    columns = METRICS_HISTORY_COLUMNS
+    rows = [
+        (timestamp.isoformat(), *(row.get(col) for col in columns))
+        for timestamp, row in zip(df.index, df.to_dict(orient="records"), strict=True)
+    ]
+    placeholders = ", ".join(["?"] * (len(columns) + 1))
+    with _connect(resolved) as conn:
+        before = conn.total_changes
+        conn.executemany(
+            f"INSERT OR IGNORE INTO metrics_history (timestamp, {', '.join(columns)}) "
+            f"VALUES ({placeholders})",
+            rows,
+        )
+        return conn.total_changes - before
+
+
+def read_metrics_history(
+    start: datetime, end: datetime, *, db_path: Path | None = None
+) -> pd.DataFrame:
+    """Ordered, bounded time-range read for training consumption (spec:
+    "Bounded Range Read"). Returns a `DatetimeIndex`-indexed frame with
+    `METRICS_HISTORY_COLUMNS`, ascending by timestamp."""
+    resolved = _resolve(db_path)
+    init_db(resolved)
+    columns = METRICS_HISTORY_COLUMNS
+    with _connect(resolved) as conn:
+        rows = conn.execute(
+            f"SELECT timestamp, {', '.join(columns)} FROM metrics_history "
+            "WHERE timestamp >= ? AND timestamp <= ? ORDER BY timestamp ASC",
+            (start.isoformat(), end.isoformat()),
+        ).fetchall()
+
+    if not rows:
+        index = pd.DatetimeIndex([], name="timestamp")
+        return pd.DataFrame({col: pd.Series(dtype="float64") for col in columns}, index=index)
+
+    index = pd.DatetimeIndex([pd.Timestamp(row[0]) for row in rows], name="timestamp")
+    data = {
+        col: [row[i + 1] for row in rows]
+        for i, col in enumerate(columns)
+    }
+    return pd.DataFrame(data, index=index)
+
+
+def metrics_history_span(
+    *, db_path: Path | None = None
+) -> tuple[int, datetime | None, datetime | None]:
+    """Lightweight `(count, earliest, latest)` over `metrics_history`,
+    without materializing the whole frame — backs the setup dashboard's
+    training-readiness state (spec domain `setup-dashboard`)."""
+    resolved = _resolve(db_path)
+    init_db(resolved)
+    with _connect(resolved) as conn:
+        count, earliest, latest = conn.execute(
+            "SELECT COUNT(*), MIN(timestamp), MAX(timestamp) FROM metrics_history"
+        ).fetchone()
+    start = pd.Timestamp(earliest) if earliest is not None else None
+    end = pd.Timestamp(latest) if latest is not None else None
+    return int(count), start, end
+
+
+def prune_metrics_history(
+    *, now: datetime | None = None, db_path: Path | None = None
+) -> int:
+    """Delete `metrics_history` rows older than
+    `METRICS_HISTORY_RETENTION_DAYS` (spec: "30-Day Retention Pruning").
+
+    The boundary row (exactly `METRICS_HISTORY_RETENTION_DAYS` old) is kept
+    — the cutoff is strictly-older-than, not older-than-or-equal. Returns
+    the number of rows deleted.
+    """
+    resolved = _resolve(db_path)
+    init_db(resolved)
+    moment = now if now is not None else datetime.now(UTC)
+    cutoff = moment - timedelta(days=METRICS_HISTORY_RETENTION_DAYS)
+    with _connect(resolved) as conn:
+        cursor = conn.execute(
+            "DELETE FROM metrics_history WHERE timestamp < ?",
+            (cutoff.isoformat(),),
         )
         return cursor.rowcount
 

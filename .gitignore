@@ -23,7 +23,14 @@ crash.log
 models/*.joblib
 models/*.metadata.json
 
+# Per-installation real-trained model artifacts (models/resolver.py's
+# REAL_MODEL_DIR default) — installation-specific, never committed.
+models/real/
+
 # Prometheus connection config (Phase 1.6) — holds a user-specific URL; not committed.
 config/prometheus.json
 
 docs/local/
+
+# Design handoff assets (not part of the tracked codebase).
+Sentinel AIOps_ Interfaz de monitoreo/
