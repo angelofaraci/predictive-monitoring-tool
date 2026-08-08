@@ -1,0 +1,33 @@
+schema: spec-driven
+
+context: |
+  Tech stack: Python (FastAPI, HTMX, Jinja2, scikit-learn, pandas), uv dependency management
+  Architecture: predictive-monitoring-tool — synthetic metrics generator, feature engineering,
+    IsolationForest anomaly detector, FastAPI + MCP + dashboard, LangGraph agent diagnosis,
+    Terraform/Azure Container Apps deployment with Prometheus/Grafana monitoring
+  Testing: pytest, no coverage tool configured, no linter wired into CI
+  Style: hand-written CSS/Jinja2 templates, no build step; strict TDD enabled per user preference
+
+rules:
+  proposal:
+    - Include rollback plan for risky changes
+  specs:
+    - Use Given/When/Then for scenarios
+    - Use RFC 2119 keywords (MUST, SHALL, SHOULD, MAY)
+  design:
+    - Include sequence diagrams for complex flows
+    - Document architecture decisions with rationale
+  tasks:
+    - Group by phase, use hierarchical numbering
+    - Keep tasks completable in one session
+  apply:
+    guidelines:
+      - Follow existing code patterns
+    tdd: true
+    test_command: "uv run pytest tests -q"
+  verify:
+    test_command: "uv run pytest tests -q"
+    build_command: ""
+    coverage_threshold: 0
+  archive:
+    - Warn before merging destructive deltas
