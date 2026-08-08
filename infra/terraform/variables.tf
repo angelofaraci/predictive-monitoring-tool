@@ -71,6 +71,12 @@ variable "prometheus_image" {
   default     = "prom/prometheus:v2.55.1"
 }
 
+variable "public_demo" {
+  description = "Sets the PUBLIC_DEMO env var on the Container App and scheduler Job (src/predictive_monitoring_tool/settings.py::is_public_demo). When true, the deployment is mock-only: real training is rejected (403) and ingestion skips real metrics history, so the public instance never accumulates real operational data."
+  type        = bool
+  default     = true
+}
+
 variable "grafana_image" {
   description = "Container image deployed to the internal-only Grafana Container App (infra/terraform/monitoring.tf). Defaults to the public upstream image so `terraform apply` succeeds standalone, before the custom image (grafana/Dockerfile, with datasource/dashboard provisioning baked in) has been built and pushed to the ACR by hand."
   type        = string
