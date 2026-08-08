@@ -133,6 +133,11 @@ resource "azurerm_container_app" "main" {
         value = "/data/alerts.db"
       }
 
+      env {
+        name  = "PUBLIC_DEMO"
+        value = tostring(var.public_demo)
+      }
+
       # Groq's free tier (langchain-groq) reads GROQ_API_KEY itself; the
       # AGENT_LLM_MODEL override (read by agent/graph.py's build_chat_model)
       # points init_chat_model() at Groq instead of its OpenAI default.
