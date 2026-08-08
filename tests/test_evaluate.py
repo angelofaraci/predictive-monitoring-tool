@@ -20,6 +20,7 @@ from predictive_monitoring_tool.models.evaluate import (
     DetectorMetrics,
     ThresholdInfo,
     baseline_scores,
+    calibrate_threshold,
     compute_metrics,
     evaluate,
     fit_baseline,
@@ -206,3 +207,47 @@ class TestLatencySLO:
             f"p95 predict() latency {latency['p95_ms']:.3f}ms exceeded the 50ms SLO "
             f"(median={latency['median_ms']:.3f}ms)"
         )
+
+
+class TestCalibrateThreshold:
+    """spec domain `real-model-training`, requirement "Percentile Threshold
+    Calibration": unlabeled path — calibrate against the model's OWN score
+    distribution (`-score_samples()`), never `select_threshold`'s
+    label-based F1 sweep."""
+
+    def test_returns_a_threshold_info_with_value_and_criterion(self):
+        rng = np.random.default_rng(7)
+        scores = rng.normal(loc=0.0, scale=1.0, size=1000)
+
+        result = calibrate_threshold(scores)
+
+        assert isinstance(result, ThresholdInfo)
+        expected = float(np.percentile(scores, 98.5))
+        assert result.value == pytest.approx(expected)
+        assert isinstance(result.criterion, str) and "percentile" in result.criterion.lower()
+
+    def test_default_percentile_is_98_5(self):
+        rng = np.random.default_rng(11)
+        scores = rng.normal(loc=0.0, scale=1.0, size=5000)
+
+        result = calibrate_threshold(scores)
+
+        expected = float(np.percentile(scores, 98.5))
+        assert result.value == pytest.approx(expected)
+
+    def test_custom_percentile_changes_the_cutoff(self):
+        rng = np.random.default_rng(13)
+        scores = rng.normal(loc=0.0, scale=1.0, size=5000)
+
+        low = calibrate_threshold(scores, percentile=90.0)
+        high = calibrate_threshold(scores, percentile=99.5)
+
+        assert low.value < high.value
+
+    def test_criterion_mentions_percentile_based_calibration(self):
+        scores = np.array([0.1, 0.2, 0.3, 0.9, 1.0])
+
+        result = calibrate_threshold(scores, percentile=98.5)
+
+        assert "98.5" in result.criterion
+        assert "percentile" in result.criterion.lower()

@@ -174,6 +174,28 @@ def select_threshold(
     )
 
 
+def calibrate_threshold(
+    scores, *, percentile: float = 98.5
+) -> ThresholdInfo:
+    """Percentile-of-score threshold calibration for the unlabeled real-data
+    path (spec: `real-model-training`, "Percentile Threshold Calibration").
+
+    Unlike `select_threshold` (which sweeps for the F1-optimal cutoff
+    against KNOWN ground truth), real installation history carries no
+    labels — so the cutoff is simply the given percentile of the model's
+    own `-score_samples()` distribution on its training set. The bottom
+    1-2% highest-scoring (most anomalous) samples are flagged, matching
+    `select_threshold`'s score polarity (higher = more anomalous) and the
+    same `{value, criterion}` metadata shape.
+    """
+    scores_arr = np.asarray(scores, dtype=float)
+    value = float(np.percentile(scores_arr, percentile))
+    return ThresholdInfo(
+        value=value,
+        criterion=f"{percentile}th percentile of the model's own score_samples() (unlabeled)",
+    )
+
+
 def evaluate(
     result, train_df: pd.DataFrame, eval_df: pd.DataFrame
 ) -> tuple[dict[str, DetectorMetrics], ThresholdInfo]:
