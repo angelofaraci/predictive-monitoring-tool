@@ -41,7 +41,9 @@ class TestMainRunsExactlyOneCycle:
         _FakeScheduler.instances.clear()
         monkeypatch.setattr(job, "Scheduler", _FakeScheduler)
         monkeypatch.setattr(job.prometheus_config, "is_configured", lambda: True)
-        monkeypatch.setattr(job.persistence, "load_model", lambda directory: (object(), {}))
+        monkeypatch.setattr(
+            job, "resolve_active_model", lambda: _FakeActiveModel(object(), {})
+        )
 
         result = job.main()
 
@@ -57,11 +59,46 @@ class TestMainRunsExactlyOneCycle:
         _FakeScheduler.instances.clear()
         monkeypatch.setattr(job, "Scheduler", _FakeScheduler)
         monkeypatch.setattr(job.prometheus_config, "is_configured", lambda: True)
-        monkeypatch.setattr(job.persistence, "load_model", lambda directory: (object(), {}))
+        monkeypatch.setattr(
+            job, "resolve_active_model", lambda: _FakeActiveModel(object(), {})
+        )
 
         job.main()
 
         assert _FakeScheduler.instances[0].run_once_calls == 1
+
+
+class _FakeActiveModel:
+    def __init__(self, model, metadata):
+        self.model = model
+        self.metadata = metadata
+
+
+class TestMainUsesResolver:
+    """spec domain `model-loading` (ADDED), "Scheduler job resolves model
+    per detection-mode-selection": the Job replaces its former direct
+    `persistence.load_model(MODEL_PATH)` call with the same
+    `models.resolver.resolve_active_model()` rule `api/main.py` uses."""
+
+    def test_main_scores_with_the_scheduler_built_from_the_resolved_model(
+        self, monkeypatch
+    ):
+        _FakeScheduler.instances.clear()
+        monkeypatch.setattr(job, "Scheduler", _FakeScheduler)
+        monkeypatch.setattr(job.prometheus_config, "is_configured", lambda: True)
+        sentinel_model = object()
+        sentinel_metadata = {"source": "sentinel"}
+        monkeypatch.setattr(
+            job,
+            "resolve_active_model",
+            lambda: _FakeActiveModel(sentinel_model, sentinel_metadata),
+        )
+
+        job.main()
+
+        scheduler = _FakeScheduler.instances[0]
+        assert scheduler.model is sentinel_model
+        assert scheduler.metadata is sentinel_metadata
 
 
 class TestMainSkipsWhenPrometheusNotConfigured:
@@ -70,10 +107,10 @@ class TestMainSkipsWhenPrometheusNotConfigured:
         monkeypatch.setattr(job, "Scheduler", _FakeScheduler)
         monkeypatch.setattr(job.prometheus_config, "is_configured", lambda: False)
 
-        def _boom(directory):
-            raise AssertionError("load_model must not be called when unconfigured")
+        def _boom():
+            raise AssertionError("resolve_active_model must not be called when unconfigured")
 
-        monkeypatch.setattr(job.persistence, "load_model", _boom)
+        monkeypatch.setattr(job, "resolve_active_model", _boom)
 
         result = job.main()
 
@@ -85,10 +122,10 @@ class TestMainSurvivesModelLoadFailure:
     def test_returns_nonzero_and_does_not_raise(self, monkeypatch):
         monkeypatch.setattr(job.prometheus_config, "is_configured", lambda: True)
 
-        def _boom(directory):
+        def _boom():
             raise RuntimeError("corrupt model artifact")
 
-        monkeypatch.setattr(job.persistence, "load_model", _boom)
+        monkeypatch.setattr(job, "resolve_active_model", _boom)
 
         result = job.main()  # must not raise
 
