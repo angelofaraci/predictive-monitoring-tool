@@ -60,15 +60,6 @@ resource "azurerm_container_app_job" "scheduler" {
   }
 
   template {
-    # Same Azure Files share mounted at the same path as the API
-    # (main.tf), so both writers (this job's single tick + the API's
-    # single pinned replica) agree on one `alerts.db` file.
-    volume {
-      name         = "alerts-data"
-      storage_name = azurerm_container_app_environment_storage.alerts.name
-      storage_type = "AzureFile"
-    }
-
     container {
       name    = "${var.project}-poll"
       image   = var.container_image
@@ -78,12 +69,7 @@ resource "azurerm_container_app_job" "scheduler" {
 
       env {
         name  = "ALERTS_DB_PATH"
-        value = "/data/alerts.db"
-      }
-
-      env {
-        name  = "PUBLIC_DEMO"
-        value = tostring(var.public_demo)
+        value = "/tmp/alerts.db"
       }
 
       # Groq's free tier (langchain-groq) reads GROQ_API_KEY itself; the
@@ -102,9 +88,13 @@ resource "azurerm_container_app_job" "scheduler" {
         value = "groq:llama-3.3-70b-versatile"
       }
 
-      volume_mounts {
-        name = "alerts-data"
-        path = "/data"
+      # Appended last (not inserted between existing blocks) — see main.tf's
+      # identical comment: `env` is an ordered list, and inserting mid-list
+      # shifts later blocks' positions, which broke `terraform apply` against
+      # the dynamic GROQ_API_KEY secret reference.
+      env {
+        name  = "PUBLIC_DEMO"
+        value = tostring(var.public_demo)
       }
     }
   }
