@@ -21,12 +21,14 @@ client error.
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import pandas as pd
 
+from predictive_monitoring_tool import settings
 from predictive_monitoring_tool.api import storage
 from predictive_monitoring_tool.api.inference import predict_from_raw
 from predictive_monitoring_tool.data import prometheus_config
@@ -35,6 +37,8 @@ from predictive_monitoring_tool.data.prometheus_client import (
     PrometheusClientError,
     fetch_metrics,
 )
+
+logger = logging.getLogger(__name__)
 
 _DEMO_DURATION_MINUTES = 20
 _DEMO_INTERVAL_SECONDS = 60
@@ -152,6 +156,26 @@ def _run_demo_ingest(
     )
 
 
+def _run_real_ingest_capture(raw: pd.DataFrame) -> None:
+    """Persist `raw` (the same frame just fetched for scoring) into
+    `metrics_history` for `real-model-training` (spec: "History capture at
+    scrape step" — decoupled from the scheduler's 900s poll cadence, this
+    is a persist side-effect of the existing fetch, not a new fetch path).
+
+    Skipped entirely under `PUBLIC_DEMO` (spec: "PUBLIC_DEMO disables
+    accumulation"). Any capture failure is caught and logged — a
+    history-write fault MUST NEVER break detection (design: "Capture is
+    wrapped in try/except + log").
+    """
+    if settings.is_public_demo():
+        return
+    try:
+        storage.insert_metrics_history(raw)
+        storage.prune_metrics_history()
+    except Exception:  # noqa: BLE001 - capture faults must never break detection
+        logger.exception("metrics_history capture failed; detection continues unaffected")
+
+
 def _run_real_ingest(model: Any, metadata: dict[str, Any], *, persist: bool) -> IngestResult:
     config = prometheus_config.load_config()
     if config.url is None:
@@ -173,6 +197,8 @@ def _run_real_ingest(model: Any, metadata: dict[str, Any], *, persist: bool) -> 
         )
     except PrometheusClientError as exc:
         raise PrometheusUnavailableError(f"Prometheus query failed: {exc}") from exc
+
+    _run_real_ingest_capture(raw)
 
     result = predict_from_raw(raw, model, metadata)
     prometheus_config.record_successful_query()

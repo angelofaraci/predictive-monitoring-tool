@@ -155,3 +155,121 @@ class TestIngestRealModeConfigured:
 
         assert response.status_code == 502
         assert "prometheus" in response.json()["detail"].lower()
+
+
+def _wire_full_metric_fake_prometheus(fake_prometheus):
+    """Programs `fake_prometheus` to serve all 5 core metrics from
+    `generate()`'s own normal-mode output (mirrors
+    `TestIngestRealModeConfigured.test_configured_but_no_anomaly_scores_without_persisting`)."""
+    from predictive_monitoring_tool.data.generator import generate as _generate
+
+    queries = {
+        "cpu_pct": "Q_cpu",
+        "memory_pct": "Q_mem",
+        "disk_pct": "Q_disk",
+        "latency_ms": "Q_latency",
+        "requests_per_sec": "Q_rps",
+    }
+    column_by_query = {v: k for k, v in queries.items()}
+
+    def _route(params):
+        start_ts, end_ts = int(params["start"]), int(params["end"])
+        step_seconds = int(pd.Timedelta(params["step"]).total_seconds())
+        index = pd.date_range(
+            start=pd.Timestamp(start_ts, unit="s", tz="UTC"),
+            end=pd.Timestamp(end_ts, unit="s", tz="UTC"),
+            freq=f"{step_seconds}s",
+        )
+        column = column_by_query[params["query"]]
+        raw = _generate(
+            duration_minutes=20,
+            interval_seconds=step_seconds,
+            start_time=index[0],
+            seed=42,
+        )
+        values = list(raw[column])
+        values.append(values[-1])
+        values = values[: len(index)]
+        return 200, {
+            "status": "success",
+            "data": {
+                "resultType": "matrix",
+                "result": [
+                    {
+                        "metric": {"instance": "node1"},
+                        "values": [
+                            [int(ts.timestamp()), str(v)]
+                            for ts, v in zip(index, values, strict=True)
+                        ],
+                    }
+                ],
+            },
+        }
+
+    fake_prometheus.set("/api/v1/query_range", _route)
+    return queries
+
+
+class TestHistoryCapture:
+    """spec domain `metrics-history`, requirement "Scrape-Granularity
+    Storage": history capture is a persist side-effect of the existing
+    real-ingest fetch path — no dependence on the 900s scheduler poll."""
+
+    def _configure(self, monkeypatch, tmp_path, fake_prometheus, queries):
+        monkeypatch.setenv("PROMETHEUS_URL", fake_prometheus.base_url)
+        monkeypatch.setenv("PROMETHEUS_CONFIG_PATH", str(tmp_path / "prometheus.json"))
+        (tmp_path / "prometheus.json").write_text(json.dumps({"queries": queries}))
+
+    def test_capture_writes_metrics_history_on_real_ingest(
+        self, client, tmp_path, monkeypatch, fake_prometheus
+    ):
+        from predictive_monitoring_tool.api import storage
+
+        queries = _wire_full_metric_fake_prometheus(fake_prometheus)
+        self._configure(monkeypatch, tmp_path, fake_prometheus, queries)
+        monkeypatch.delenv("PUBLIC_DEMO", raising=False)
+
+        response = client.post("/ingest", json={"mode": "real"})
+
+        assert response.status_code == 200
+        start = pd.Timestamp.now(tz="UTC") - pd.Timedelta(hours=1)
+        end = pd.Timestamp.now(tz="UTC") + pd.Timedelta(hours=1)
+        history = storage.read_metrics_history(start, end)
+        assert len(history) > 0
+
+    def test_capture_skipped_under_public_demo(
+        self, client, tmp_path, monkeypatch, fake_prometheus
+    ):
+        from predictive_monitoring_tool.api import storage
+
+        queries = _wire_full_metric_fake_prometheus(fake_prometheus)
+        self._configure(monkeypatch, tmp_path, fake_prometheus, queries)
+        monkeypatch.setenv("PUBLIC_DEMO", "1")
+
+        response = client.post("/ingest", json={"mode": "real"})
+
+        assert response.status_code == 200
+        start = pd.Timestamp.now(tz="UTC") - pd.Timedelta(hours=1)
+        end = pd.Timestamp.now(tz="UTC") + pd.Timedelta(hours=1)
+        history = storage.read_metrics_history(start, end)
+        assert len(history) == 0
+
+    def test_capture_fault_never_breaks_detection(
+        self, client, tmp_path, monkeypatch, fake_prometheus
+    ):
+        from predictive_monitoring_tool.api import storage
+
+        queries = _wire_full_metric_fake_prometheus(fake_prometheus)
+        self._configure(monkeypatch, tmp_path, fake_prometheus, queries)
+        monkeypatch.delenv("PUBLIC_DEMO", raising=False)
+
+        def _boom(*args, **kwargs):
+            raise RuntimeError("simulated storage fault")
+
+        monkeypatch.setattr(storage, "insert_metrics_history", _boom)
+
+        response = client.post("/ingest", json={"mode": "real"})
+
+        assert response.status_code == 200
+        body = response.json()
+        assert body["is_anomaly"] is False

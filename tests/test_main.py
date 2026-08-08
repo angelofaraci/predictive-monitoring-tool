@@ -38,3 +38,36 @@ class TestMetricsEndpoint:
         assert response.status_code == 200
         assert "http_requests_total" in response.text
         assert "http_request_duration_seconds_bucket" in response.text
+
+
+class TestLifespanResolvesActiveModel:
+    """spec domain `model-loading` (ADDED): "Artifact Resolution at Every
+    Load Point" — startup resolves via `models.resolver.resolve_active_model()`
+    instead of always loading `MODEL_PATH` unconditionally, and every
+    endpoint reads `app.state.active_model` (design: `ActiveModel`
+    container, single-attribute atomic swap)."""
+
+    def test_startup_sets_active_model_with_a_resolved_source(self, client):
+        assert hasattr(client.app.state, "active_model")
+        active = client.app.state.active_model
+        assert active.source in {"real", "generic"}
+        assert active.model is not None
+        assert isinstance(active.metadata, dict)
+
+    def test_startup_falls_back_to_generic_when_no_real_model_exists(
+        self, client, tmp_path, monkeypatch
+    ):
+        # `client` fixture never seeds `models/real`, so with no
+        # `REAL_MODEL_PATH` override the resolver must fall back to the
+        # generic `MODEL_PATH` artifact the fixture DOES seed.
+        assert client.app.state.active_model.source == "generic"
+
+    def test_predict_endpoint_scores_using_the_resolved_active_model(self, client):
+        # No direct way to assert WHICH model scored without duplicating
+        # inference internals — this asserts the endpoint still works end
+        # to end after the `app.state.model`/`app.state.metadata` ->
+        # `app.state.active_model` migration (regression guard).
+        response = client.post("/ingest", json={"mode": "demo"})
+
+        assert response.status_code == 200
+        assert isinstance(response.json()["is_anomaly"], bool)

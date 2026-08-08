@@ -10,10 +10,8 @@ decision), falling back to `persistence.MODEL_DIR` when unset.
 
 from __future__ import annotations
 
-import os
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
-from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.staticfiles import StaticFiles
@@ -42,23 +40,29 @@ from predictive_monitoring_tool.api.schemas import (
 )
 from predictive_monitoring_tool.dashboard.routes import STATIC_DIR
 from predictive_monitoring_tool.dashboard.routes import router as dashboard_router
-from predictive_monitoring_tool.models import persistence
+from predictive_monitoring_tool.models.resolver import resolve_active_model
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
-    """Load the model + metadata once at startup into `app.state`.
+    """Resolve and load the active model once at startup into `app.state`.
 
     Phase 9: no longer owns any polling scheduler. Real-mode polling now
     runs exclusively via a Container Apps Job on a cron trigger
     (`orchestration/job.py`, deployed in Work Unit 4), decoupled from this
     API's own scaling — see README's "Orchestration" section. Demo mode is
     unaffected: it stays triggered on demand from the UI (Phase 8).
+
+    Per-installation training mode (spec domain `model-loading`): resolves
+    via `models.resolver.resolve_active_model()` (real model preferred when
+    present, valid, and not `PUBLIC_DEMO`; generic pretrained model
+    otherwise) instead of always loading `MODEL_PATH` unconditionally.
+    `app.state.active_model` replaces the former separate
+    `app.state.model`/`app.state.metadata` pair — see
+    `dashboard/routes.py`'s `/setup/train` handler for the same
+    `ActiveModel` container swapped post-startup.
     """
-    directory = Path(os.environ.get("MODEL_PATH", str(persistence.MODEL_DIR)))
-    model, metadata = persistence.load_model(directory)
-    app.state.model = model
-    app.state.metadata = metadata
+    app.state.active_model = resolve_active_model()
 
     yield
 
@@ -86,7 +90,8 @@ def predict(request: PredictRequest) -> PredictResponse:
     """Stateless inference over a raw window of readings (spec: POST /predict)."""
     try:
         df = readings_to_frame([r.model_dump() for r in request.readings])
-        result = predict_from_raw(df, app.state.model, app.state.metadata)
+        active = app.state.active_model
+        result = predict_from_raw(df, active.model, active.metadata)
     except InsufficientHistoryError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
@@ -101,9 +106,8 @@ def predict(request: PredictRequest) -> PredictResponse:
 def ingest(request: IngestRequest) -> IngestResponse:
     """Run the full pipeline for `request.mode` and persist on anomaly (spec: POST /ingest)."""
     try:
-        result = run_ingest(
-            request.mode, request.scenario, app.state.model, app.state.metadata
-        )
+        active = app.state.active_model
+        result = run_ingest(request.mode, request.scenario, active.model, active.metadata)
     except RealModeNotImplementedError as exc:
         raise HTTPException(status_code=501, detail=str(exc)) from exc
     except PrometheusUnavailableError as exc:

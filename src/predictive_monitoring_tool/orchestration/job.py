@@ -22,12 +22,10 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import os
 import sys
-from pathlib import Path
 
 from predictive_monitoring_tool.data import prometheus_config
-from predictive_monitoring_tool.models import persistence
+from predictive_monitoring_tool.models.resolver import resolve_active_model
 from predictive_monitoring_tool.orchestration.scheduler import Scheduler
 
 logger = logging.getLogger(__name__)
@@ -52,10 +50,17 @@ def main() -> int:
     Returns 0 when the tick completed, or when Prometheus is not configured
     (nothing to poll this tick — matches `api/main.py`'s lifespan behavior
     of never starting a scheduler in that case). Returns non-zero only for
-    an unrecoverable startup failure (the model failed to load); a routine
-    poll/storage error inside the cycle itself is already logged and
-    swallowed by `Scheduler.run_once()` and must not fail the Job run (the
-    next cron tick is the retry — design ADR: `replica_retry_limit = 0`).
+    an unrecoverable startup failure (the model failed to resolve/load); a
+    routine poll/storage error inside the cycle itself is already logged
+    and swallowed by `Scheduler.run_once()` and must not fail the Job run
+    (the next cron tick is the retry — design ADR: `replica_retry_limit = 0`).
+
+    Per-installation training mode (spec domain `model-loading`): resolves
+    via `models.resolver.resolve_active_model()` — the same real-vs-generic
+    rule `api/main.py`'s lifespan uses — instead of always loading
+    `MODEL_PATH` directly. The Job is a one-shot process, so it re-resolves
+    at its own startup every tick; no in-process reload mechanism is
+    needed here (design: "Hot-reload via in-process state swap").
     """
     logging.basicConfig(level=logging.INFO)
 
@@ -63,14 +68,13 @@ def main() -> int:
         logger.warning("Prometheus is not configured; nothing to poll this tick")
         return 0
 
-    directory = Path(os.environ.get("MODEL_PATH", str(persistence.MODEL_DIR)))
     try:
-        model, metadata = persistence.load_model(directory)
+        active = resolve_active_model()
     except Exception:
-        logger.exception("Failed to load model from %s; cannot run this tick", directory)
+        logger.exception("Failed to resolve the active model; cannot run this tick")
         return 1
 
-    scheduler = Scheduler(model=model, metadata=metadata)
+    scheduler = Scheduler(model=active.model, metadata=active.metadata)
     asyncio.run(_run_one_cycle(scheduler))
     return 0
 
