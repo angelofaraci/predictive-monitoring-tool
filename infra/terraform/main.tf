@@ -100,27 +100,13 @@ resource "azurerm_container_app" "main" {
   }
 
   template {
-    # Single-writer pin (design ADR #2): the mounted /data/alerts.db is a
-    # plain SQLite file over SMB, never WAL. More than one API replica
-    # would mean more than one writer beyond the two the design accounts
-    # for (this app + the scheduler Job's own tick), so scale-out is
-    # deliberately disabled — final for Phase 9, not revisited here (see
-    # apply-progress decision-lock #1).
+    # Single-writer pin (design ADR #2): more than one API replica would
+    # mean more than one writer beyond the two the design accounts for
+    # (this app + the scheduler Job's own tick) racing against the same
+    # local SQLite file, so scale-out is deliberately disabled — final for
+    # Phase 9, not revisited here (see apply-progress decision-lock #1).
     min_replicas = 1
     max_replicas = 1
-
-    # Backs `api/storage.py`'s `alerts.db` via
-    # `azurerm_container_app_environment_storage.alerts` (storage.tf) so
-    # alert/cooldown data survives redeploys and revision restarts (spec
-    # domain `infra-persistence`). Wired into the Scheduler Job work unit
-    # below via `ALERTS_DB_PATH`, matching the same mounted path used by
-    # scheduler_job.tf's own volume mount, so both writers agree on one
-    # file.
-    volume {
-      name         = "alerts-data"
-      storage_name = azurerm_container_app_environment_storage.alerts.name
-      storage_type = "AzureFile"
-    }
 
     container {
       name   = var.project
@@ -130,12 +116,7 @@ resource "azurerm_container_app" "main" {
 
       env {
         name  = "ALERTS_DB_PATH"
-        value = "/data/alerts.db"
-      }
-
-      env {
-        name  = "PUBLIC_DEMO"
-        value = tostring(var.public_demo)
+        value = "/tmp/alerts.db"
       }
 
       # Groq's free tier (langchain-groq) reads GROQ_API_KEY itself; the
@@ -156,9 +137,17 @@ resource "azurerm_container_app" "main" {
         value = "groq:llama-3.3-70b-versatile"
       }
 
-      volume_mounts {
-        name = "alerts-data"
-        path = "/data"
+      # Appended last (not inserted between existing blocks) since `env` is
+      # an ordered list, not keyed by name: an env{} block inserted in the
+      # middle shifts every later block's position, which Terraform reads
+      # as those blocks being renamed in place. When one of the shifted
+      # blocks is the dynamic GROQ_API_KEY secret reference, the azurerm
+      # provider can't correlate its plan against the actual (empty)
+      # Key Vault-sourced value and apply fails with "Provider produced
+      # inconsistent final plan".
+      env {
+        name  = "PUBLIC_DEMO"
+        value = tostring(var.public_demo)
       }
     }
   }

@@ -71,8 +71,3 @@ resource "azurerm_key_vault_secret" "grafana_admin_password" {
 
   depends_on = [azurerm_role_assignment.keyvault_secrets_officer]
 }
-
-# NOTE: the storage-account-key secret referenced above is created in
-# storage.tf (Work Unit 3 / Phase 3), not here — it needs the app-data
-# storage account's primary access key, which did not exist when this file
-# was first created (Work Unit 2 / Phase 2).
