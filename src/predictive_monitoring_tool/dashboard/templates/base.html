@@ -18,6 +18,44 @@
       <a href="/setup">Setup</a>
     </nav>
   </header>
+  {% if demo_mode %}
+  <div class="demo-banner" id="demo-banner" role="status" aria-live="polite" hidden>
+    <span class="demo-banner__dot" aria-hidden="true"></span>
+    <div class="demo-banner__body">
+      <span class="demo-banner__label">Modo demo</span>
+      <p class="demo-banner__text">
+        <strong>Datos sintéticos.</strong> Las series, las alertas y los diagnósticos del agente
+        son generados para demostración. Esta instancia no está conectada a infraestructura real.
+      </p>
+    </div>
+    <a class="demo-banner__cta"
+       href="https://github.com/angelofaraci/predictive-monitoring-tool#install"
+       target="_blank" rel="noopener">
+      Instalá tu propia instancia <span aria-hidden="true">&rarr;</span>
+    </a>
+    <button class="demo-banner__close" id="demo-banner-close"
+            type="button" aria-label="Cerrar aviso de modo demo">&#10005;</button>
+  </div>
+
+  <script>
+  (function () {
+    var KEY = 'pmt.demoBannerDismissed';
+    var el = document.getElementById('demo-banner');
+    if (!el) return;
+
+    var store;
+    try { store = window.localStorage; } catch (e) { store = null; }
+
+    if (store && store.getItem(KEY) === '1') { el.remove(); return; }
+    el.hidden = false;
+
+    document.getElementById('demo-banner-close').addEventListener('click', function () {
+      if (store) { try { store.setItem(KEY, '1'); } catch (e) {} }
+      el.remove();
+    });
+  })();
+  </script>
+  {% endif %}
   <main>
     {% block content %}{% endblock %}
   </main>

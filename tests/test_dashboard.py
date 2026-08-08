@@ -19,10 +19,14 @@ from __future__ import annotations
 
 import json
 import re
+from datetime import UTC, datetime, timedelta
 
+from predictive_monitoring_tool.api import storage
 from predictive_monitoring_tool.dashboard.chart import build_sparkline
 from predictive_monitoring_tool.dashboard.context import ViewState, get_view_state
 from predictive_monitoring_tool.data import prometheus_config
+from predictive_monitoring_tool.data.generator import EXPECTED_COLUMNS, generate
+from predictive_monitoring_tool.models import resolver
 
 
 def _isolate(monkeypatch, tmp_path, *, url: str | None = None):
@@ -346,3 +350,114 @@ class TestThreatMatrix:
 
         assert response.status_code == 200
         assert "<script>alert(1)</script>" not in response.text
+
+
+def _seed_short_history(db_path):
+    """~2 hours of 15s-granularity synthetic history, anchored to `now` so
+    `training.train_real_model()`'s default 7-day lookback always covers
+    it — enough span to clear `build_features()`'s 5min/15min windows
+    without the multi-day cost of a full recommended-volume seed."""
+    raw = generate(
+        duration_minutes=120,
+        interval_seconds=15,
+        seed=42,
+        start_time=datetime.now(UTC) - timedelta(hours=2),
+    )
+    storage.insert_metrics_history(raw[list(EXPECTED_COLUMNS)], db_path=db_path)
+
+
+class TestSetupPageReadiness:
+    """spec domain `setup-dashboard`, "Training Readiness State"."""
+
+    def test_public_demo_hides_train_now_action(self, client, tmp_path, monkeypatch):
+        _isolate(monkeypatch, tmp_path, url="http://prom:9090")
+        monkeypatch.setenv("PUBLIC_DEMO", "1")
+
+        response = client.get("/setup")
+
+        assert response.status_code == 200
+        assert "train now" not in response.text.lower()
+
+    def test_self_hosted_configured_shows_train_now_action(
+        self, client, tmp_path, monkeypatch
+    ):
+        _isolate(monkeypatch, tmp_path, url="http://prom:9090")
+        monkeypatch.delenv("PUBLIC_DEMO", raising=False)
+
+        response = client.get("/setup")
+
+        assert response.status_code == 200
+        assert "train now" in response.text.lower()
+
+    def test_insufficient_history_shows_guidance(self, client, tmp_path, monkeypatch):
+        _isolate(monkeypatch, tmp_path, url="http://prom:9090")
+        monkeypatch.delenv("PUBLIC_DEMO", raising=False)
+
+        response = client.get("/setup")
+
+        assert response.status_code == 200
+        body = response.text.lower()
+        assert "not yet" in body or "insufficient" in body
+
+    def test_active_mode_reflected_after_training(self, client, tmp_path, monkeypatch):
+        _isolate(monkeypatch, tmp_path, url="http://prom:9090")
+        monkeypatch.setattr(resolver, "REAL_MODEL_DIR", tmp_path / "real")
+        monkeypatch.delenv("PUBLIC_DEMO", raising=False)
+        _seed_short_history(storage.DB_PATH)
+        client.post("/setup/train", data={"days": "7"})
+
+        response = client.get("/setup")
+
+        assert response.status_code == 200
+        assert "real" in response.text.lower()
+
+
+class TestSetupTrain:
+    """spec domains `real-model-training`/`setup-dashboard`: `POST
+    /setup/train` trains synchronously and atomically swaps
+    `app.state.active_model` (design: "Hot-reload via in-process state
+    swap" — one `ActiveModel` assignment, never a torn model/metadata
+    pair)."""
+
+    def test_train_now_swaps_active_model_to_real(self, client, tmp_path, monkeypatch):
+        monkeypatch.setattr(resolver, "REAL_MODEL_DIR", tmp_path / "real")
+        monkeypatch.delenv("PUBLIC_DEMO", raising=False)
+        _seed_short_history(storage.DB_PATH)
+
+        response = client.post("/setup/train", data={"days": "7"})
+
+        assert response.status_code == 200
+        assert client.app.state.active_model.source == "real"
+
+    def test_public_demo_rejects_training_with_403(self, client, monkeypatch):
+        monkeypatch.setenv("PUBLIC_DEMO", "1")
+
+        response = client.post("/setup/train", data={"days": "7"})
+
+        assert response.status_code == 403
+
+    def test_insufficient_history_does_not_swap_active_model(
+        self, client, tmp_path, monkeypatch
+    ):
+        monkeypatch.setattr(resolver, "REAL_MODEL_DIR", tmp_path / "real")
+        monkeypatch.delenv("PUBLIC_DEMO", raising=False)
+        before_source = client.app.state.active_model.source
+
+        response = client.post("/setup/train", data={"days": "7"})
+
+        assert response.status_code == 200  # rendered guidance fragment, not a 500
+        body = response.text.lower()
+        assert "not enough" in body or "insufficient" in body or "no accumulated" in body
+        assert client.app.state.active_model.source == before_source
+
+    def test_user_selected_custom_history_volume_is_used(
+        self, client, tmp_path, monkeypatch
+    ):
+        monkeypatch.setattr(resolver, "REAL_MODEL_DIR", tmp_path / "real")
+        monkeypatch.delenv("PUBLIC_DEMO", raising=False)
+        _seed_short_history(storage.DB_PATH)
+
+        response = client.post("/setup/train", data={"days": "1"})
+
+        assert response.status_code == 200
+        assert client.app.state.active_model.source == "real"

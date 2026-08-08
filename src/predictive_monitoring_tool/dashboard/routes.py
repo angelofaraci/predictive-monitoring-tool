@@ -18,7 +18,8 @@ from fastapi import APIRouter, Depends, Form, HTTPException, Query, Request
 from fastapi.responses import RedirectResponse
 from fastapi.templating import Jinja2Templates
 
-from predictive_monitoring_tool.api import storage
+from predictive_monitoring_tool import settings
+from predictive_monitoring_tool.api import storage, training
 from predictive_monitoring_tool.api.ingestion import (
     PrometheusUnavailableError,
     RealModeNotImplementedError,
@@ -30,16 +31,41 @@ from predictive_monitoring_tool.dashboard.context import ViewState, get_view_sta
 from predictive_monitoring_tool.data import connection_check, prometheus_config
 from predictive_monitoring_tool.data.prometheus_config import PrometheusConfig
 from predictive_monitoring_tool.data.scenarios import SCENARIOS
+from predictive_monitoring_tool.models.resolver import resolve_active_model
 
 _PACKAGE_DIR = Path(__file__).parent
 TEMPLATES_DIR = _PACKAGE_DIR / "templates"
 STATIC_DIR = _PACKAGE_DIR / "static"
 
 templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
+templates.env.globals["demo_mode"] = settings.is_public_demo()
 
 router = APIRouter()
 
 _RECENT_ALERTS_LIMIT = 20
+
+# Setup dashboard "Train now" guidance (spec domain `real-model-training`,
+# "User-Selected History Volume": recommended default ~7 days / ~40k rows
+# at 15s granularity, no hard floor enforced beyond guidance).
+_RECOMMENDED_TRAINING_ROWS = 40_000
+# Informational-only floor for the readiness banner (spec: "Insufficient
+# history shows guidance") — NEVER blocks submission; `api/training.py`'s
+# own `InsufficientHistoryError` is the sole enforcement point.
+_MINIMUM_USABLE_HISTORY_ROWS = 100
+
+
+def _build_training_readiness() -> dict[str, Any]:
+    """Accumulated `metrics_history` span/count for the setup page's
+    training-readiness state (spec domain `setup-dashboard`)."""
+    count, start, end = storage.metrics_history_span()
+    return {
+        "history_count": count,
+        "history_start": start,
+        "history_end": end,
+        "sufficient": count >= _MINIMUM_USABLE_HISTORY_ROWS,
+        "recommended_days": training.DEFAULT_TRAINING_DAYS,
+        "recommended_rows": _RECOMMENDED_TRAINING_ROWS,
+    }
 
 
 def get_current_view_state(demo: bool = Query(False)) -> ViewState:
@@ -83,9 +109,16 @@ def index(view: ViewState = Depends(get_current_view_state)) -> RedirectResponse
 
 @router.get("/setup")
 def setup_page(request: Request, view: ViewState = Depends(get_current_view_state)):
-    """URL form, current config, and a demo-mode fallback link."""
+    """URL form, current config, demo-mode fallback link, and (when not
+    `PUBLIC_DEMO`) the "Train now" section with training-readiness state
+    (spec domain `setup-dashboard`)."""
     config = prometheus_config.load_config()
-    return render(request, "setup.html", view, current_url=config.url)
+    is_public_demo = settings.is_public_demo()
+    context: dict[str, Any] = {"current_url": config.url, "is_public_demo": is_public_demo}
+    if not is_public_demo:
+        context["readiness"] = _build_training_readiness()
+        context["active_mode"] = request.app.state.active_model.source
+    return render(request, "setup.html", view, **context)
 
 
 @router.post("/setup/test")
@@ -103,6 +136,36 @@ def setup_save(request: Request, url: str = Form(...)):
     shows restart notice")."""
     prometheus_config.save_config(PrometheusConfig(url=url))
     return render(request, "partials/_save_result.html", saved_url=url)
+
+
+@router.post("/setup/train")
+def setup_train(request: Request, days: int = Form(training.DEFAULT_TRAINING_DAYS)):
+    """Train the installation-specific real model on the last `days` of
+    accumulated `metrics_history` and atomically swap
+    `app.state.active_model` (spec domain `real-model-training`; design:
+    "Hot-reload via in-process state swap" — a single `ActiveModel`
+    assignment, never a torn model/metadata pair under concurrency).
+
+    Rejects with 403 under `PUBLIC_DEMO` (spec: "PUBLIC_DEMO rejects
+    training requests") — never trains, never renders the form's success
+    path. A failed run (no/insufficient history, missing configured
+    metrics) renders the same partial with guidance and leaves the active
+    model untouched (spec: "Safe Failure Handling").
+    """
+    if settings.is_public_demo():
+        raise HTTPException(
+            status_code=403, detail="training is disabled for PUBLIC_DEMO deployments"
+        )
+
+    try:
+        report = training.train_real_model(days=days)
+    except (training.InsufficientHistoryError, training.MissingConfiguredMetricsError) as exc:
+        return render(request, "partials/_train_result.html", error=str(exc))
+
+    # One atomic attribute assignment — see module docstring above and
+    # `models/resolver.py`'s `ActiveModel` for the concurrency rationale.
+    request.app.state.active_model = resolve_active_model()
+    return render(request, "partials/_train_result.html", report=report)
 
 
 @router.get("/dashboard")
@@ -139,7 +202,8 @@ def dashboard_demo_trigger(request: Request, scenario: str):
         raise HTTPException(status_code=404, detail=f"unknown demo scenario: {scenario!r}")
 
     try:
-        run_ingest("demo", scenario, request.app.state.model, request.app.state.metadata)
+        active = request.app.state.active_model
+        run_ingest("demo", scenario, active.model, active.metadata)
     except (
         RealModeNotImplementedError,
         PrometheusUnavailableError,

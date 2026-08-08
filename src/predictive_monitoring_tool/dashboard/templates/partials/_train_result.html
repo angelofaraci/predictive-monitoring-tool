@@ -1,0 +1,14 @@
+{% if error %}
+<div id="train-result" class="train-result status-failed">
+  <p>Training was not completed: {{ error }}</p>
+</div>
+{% else %}
+<div id="train-result" class="train-result status-ok">
+  <p>
+    Training complete — {{ report.rows_trained }} rows used
+    ({{ report.history_start }} to {{ report.history_end }}).
+  </p>
+  <p>Calibrated threshold: {{ "%.4f"|format(report.threshold.value) }} ({{ report.threshold.criterion }}).</p>
+  <p class="notice">The real model is now the active detection mode.</p>
+</div>
+{% endif %}

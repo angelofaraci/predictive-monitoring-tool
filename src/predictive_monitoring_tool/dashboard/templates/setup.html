@@ -42,5 +42,52 @@
   <div id="save-result"></div>
 </section>
 
+{% if not is_public_demo %}
+<section class="setup-form">
+  <h2>Train the real model</h2>
+  <p>
+    Train an installation-specific model on your own accumulated
+    Prometheus history, instead of the generic pretrained model.
+  </p>
+
+  {% if active_mode %}
+  <p>Active detection mode: <strong>{{ active_mode }}</strong></p>
+  {% endif %}
+
+  {% if readiness %}
+  <p class="notice">
+    Accumulated history: {{ readiness.history_count }} readings
+    {% if readiness.history_start and readiness.history_end %}
+    ({{ readiness.history_start }} to {{ readiness.history_end }})
+    {% endif %}.
+  </p>
+  {% if not readiness.sufficient %}
+  <p class="notice">
+    Not enough history has accumulated yet — training is not yet advisable.
+    Let this installation run longer before training the real model.
+  </p>
+  {% endif %}
+  {% endif %}
+
+  <form hx-post="/setup/train" hx-target="#train-result" hx-swap="innerHTML">
+    <label for="train-days">History to train on (days)</label>
+    <input
+      id="train-days"
+      name="days"
+      type="number"
+      min="1"
+      value="{{ readiness.recommended_days if readiness else 7 }}"
+    >
+    <p class="notice">
+      Recommended: {{ readiness.recommended_days if readiness else 7 }} days
+      (~{{ readiness.recommended_rows if readiness else 40000 }} rows at 15s
+      granularity). Training with less history is allowed but less reliable.
+    </p>
+    <button type="submit">Train now</button>
+  </form>
+  <div id="train-result"></div>
+</section>
+{% endif %}
+
 <p><a href="/dashboard?demo=1">Use demo data instead</a></p>
 {% endblock %}
